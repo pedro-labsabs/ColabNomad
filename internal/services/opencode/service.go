@@ -16,7 +16,7 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/secure"
 )
 
-const requiredVersion = "opencode v2.0.11"
+const requiredVersion = "2.0.11"
 
 type Config struct {
 	Binary, Workspace, StateDir, Version, Username, Password, APIKey string
@@ -48,6 +48,9 @@ func (s *Service) configPath() string {
 }
 
 func (s *Service) Prepare(ctx context.Context) error {
+	if s.cfg.Version != requiredVersion {
+		return s.safeError(fmt.Sprintf("unsupported configured opencode version %q, want %q", s.cfg.Version, requiredVersion))
+	}
 	if s.cfg.Binary == "" {
 		return s.safeError("opencode binary is required")
 	}
@@ -75,8 +78,9 @@ func (s *Service) Prepare(ctx context.Context) error {
 	if err != nil {
 		return s.safeError("check opencode version: " + err.Error())
 	}
-	if strings.TrimSpace(result.Stdout) != requiredVersion {
-		return s.safeError(fmt.Sprintf("unsupported opencode version %q, want %q", strings.TrimSpace(result.Stdout), requiredVersion))
+	wantVersion := "opencode v" + s.cfg.Version
+	if strings.TrimSpace(result.Stdout) != wantVersion {
+		return s.safeError(fmt.Sprintf("unsupported opencode version %q, want %q", strings.TrimSpace(result.Stdout), wantVersion))
 	}
 	return nil
 }

@@ -29,7 +29,7 @@ func (r *fakeRunner) Run(_ context.Context, spec execx.Spec) (execx.Result, erro
 func newTestService(t *testing.T) (*Service, *fakeRunner) {
 	t.Helper()
 	r := &fakeRunner{result: execx.Result{Stdout: "opencode v2.0.11\n"}}
-	s := New(Config{Binary: "/verified/opencode", Workspace: "/content/workspaces/project", StateDir: t.TempDir(), Username: "opencode", Password: "password", APIKey: "api-key", Port: 4096}, health.Prober{})
+	s := New(Config{Binary: "/verified/opencode", Workspace: "/content/workspaces/project", StateDir: t.TempDir(), Version: "2.0.11", Username: "opencode", Password: "password", APIKey: "api-key", Port: 4096}, health.Prober{})
 	s.runner = r
 	return s, r
 }
@@ -87,6 +87,29 @@ func TestPrepareRejectsWrongVersion(t *testing.T) {
 	runner.result.Stdout = "opencode v2.0.10\n"
 	if err := svc.Prepare(context.Background()); err == nil {
 		t.Fatal("wrong version accepted")
+	}
+}
+
+func TestPrepareRejectsMissingOrWrongConfiguredVersionBeforeRunningBinary(t *testing.T) {
+	for _, version := range []string{"", "2.0.10"} {
+		t.Run(version, func(t *testing.T) {
+			svc, runner := newTestService(t)
+			svc.cfg.Version = version
+			if err := svc.Prepare(context.Background()); err == nil {
+				t.Fatal("invalid configured version accepted")
+			}
+			if len(runner.runs) != 0 {
+				t.Fatalf("binary ran for invalid configured version: %#v", runner.runs)
+			}
+		})
+	}
+}
+
+func TestPrepareRejectsBinaryOutputThatDoesNotMatchConfiguredVersion(t *testing.T) {
+	svc, runner := newTestService(t)
+	runner.result.Stdout = "opencode v2.0.10\n"
+	if err := svc.Prepare(context.Background()); err == nil {
+		t.Fatal("binary version mismatch accepted")
 	}
 }
 
