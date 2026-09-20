@@ -17,9 +17,10 @@ type System struct {
 	GOOS   string
 	IsRoot func() bool
 	// Debian is an optional test/embedding override for distro detection.
-	Debian  bool
-	mu      sync.Mutex
-	updated bool
+	Debian   bool
+	mu       sync.Mutex
+	updateMu sync.Mutex
+	updated  bool
 }
 
 func (s *System) Ensure(ctx context.Context, binary, aptPackage string) (string, error) {
@@ -48,6 +49,8 @@ func (s *System) Ensure(ctx context.Context, binary, aptPackage string) (string,
 	if err != nil {
 		return "", fmt.Errorf("find apt-get: %w", err)
 	}
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
 	s.mu.Lock()
 	needUpdate := !s.updated
 	s.mu.Unlock()
