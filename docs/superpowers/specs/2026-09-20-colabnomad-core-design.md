@@ -27,14 +27,16 @@ The design optimizes for fast reconstruction rather than assuming that a Colab V
 - A failed service must be diagnosable without rerunning the entire notebook.
 - The runtime must tolerate browser disconnects while the Colab VM itself remains alive.
 - Version-sensitive external tools must be pinned or compatibility-checked.
-- The v0.1 core uses Go; Zig is deferred until there is evidence that Go is a bottleneck.
+- The v0.1 language architecture is deliberately split: Python owns only Colab integration/bootstrap; Go owns the authoritative runtime and all long-lived child processes.
+- Shell is an invocation surface, not an application layer: orchestration must not accumulate in large shell scripts.
+- Rust or Zig may be introduced later only for an isolated low-level component with a demonstrated requirement that Go does not satisfy cleanly.
 
 ## 3. Scope of v0.1
 
 v0.1 provides:
 
 1. a minimal Colab notebook;
-2. a bootstrap entry point stored in this repository;
+2. a minimal Python bootstrap entry point stored in this repository;
 3. one Go CLI/runtime named `colabnomad`;
 4. target workspace cloning and Git authentication support;
 5. OpenCode installation, configuration, launch, health checking, and restart;
@@ -65,10 +67,10 @@ The runtime has five layers:
 notebook.ipynb
     |
     v
-bootstrap
+bootstrap.py (Python / Colab adapter)
     |
     v
-colabnomad (Go supervisor)
+colabnomad (Go control plane + supervisor)
     |
     +-- workspace manager
     +-- dependency manager
@@ -86,36 +88,56 @@ The notebook does not own child processes after bootstrap handoff.
 
 The notebook exposes only user-facing bootstrap configuration such as:
 
-- ColabNomad source/release channel;
+- ColabNomad repository/ref or release channel;
 - target repository URL;
-- optional branch/ref;
+- optional target branch/ref;
 - optional workspace name.
+
+The notebook clones or updates the selected ColabNomad ref into a deterministic path, then invokes `colab/bootstrap.py` from that checkout. Cells must not duplicate dependency installation, service configuration, process supervision, health logic, or tunnel logic that belongs in the repository.
 
 Secrets are read through Colab Secrets, not embedded in the notebook or committed files.
 
 Its final action invokes the repository bootstrap and prints the resulting service summary.
 
-### 4.2 Bootstrap
+### 4.2 Python bootstrap
 
-The bootstrap is intentionally small and uses tooling guaranteed to exist in a normal Colab image.
+The bootstrap is intentionally small Python code because Python and the `google.colab` integration are native to the Colab environment. It is an adapter into the Go runtime, not a second control plane.
 
 Responsibilities:
 
+- read notebook parameters and Colab Secrets;
 - detect OS and CPU architecture;
 - create the ephemeral ColabNomad state directory;
-- obtain a compatible ColabNomad binary;
-- verify downloaded artifacts when checksums are available;
+- resolve a pinned ColabNomad release;
+- download and verify the matching binary and checksum;
+- prepare a minimal, sanitized environment for the runtime;
 - execute `colabnomad up` with the requested target repository.
+
+The Python bootstrap must not supervise long-lived services, own restart loops, hold authoritative runtime state, or duplicate business logic from the Go core. Prefer the Python standard library plus `google.colab`; adding third-party Python dependencies requires explicit justification.
 
 Distribution strategy:
 
-1. prefer a pinned GitHub Release binary;
-2. fall back to building the checked-out Go source when a release is unavailable;
-3. fail with an actionable diagnostic instead of silently changing versions.
+1. prefer a pinned GitHub Release binary for the detected Linux architecture;
+2. if the release artifact is unavailable, download a pinned Go toolchain into ephemeral state and build the already checked-out ColabNomad source commit rather than silently selecting a different version;
+3. verify downloadable artifacts before execution whenever a published checksum exists;
+4. fail with an actionable diagnostic instead of silently changing versions.
 
-### 4.3 ColabNomad runtime
+### 4.3 Language boundaries
 
-The Go runtime owns lifecycle and dependency ordering.
+The language split is part of the architecture:
+
+- **Python:** Colab integration, parameter/secret acquisition, release bootstrap, then handoff.
+- **Go:** authoritative control plane, process ownership, state, health checks, Git/workspace operations, service adapters, diagnostics, and CLI.
+- **Shell:** short explicit commands invoked through argv only; no orchestration framework or large shell scripts.
+- **Rust/Zig:** reserved for future isolated low-level components only when a measured requirement justifies another toolchain.
+
+After the Python process hands off to `colabnomad`, normal runtime operation must not depend on Python.
+
+### 4.4 ColabNomad runtime
+
+The Go runtime owns lifecycle, dependency ordering, persistent in-session state, and all long-lived child processes.
+
+`colabnomad up` must establish or reconnect to a long-lived Go supervisor that is independent of the Python bootstrap process. The bootstrap waits only for the bounded startup result/connection summary, then exits; killing or completing the notebook bootstrap cell must not make Python the lifetime owner of OpenCode, ttyd, tmux, or cloudflared.
 
 Initial command surface:
 
@@ -134,7 +156,7 @@ State may contain service PIDs, ports, generated URLs, timestamps, resolved vers
 
 Secrets must remain in process environment or protected temporary files and must never appear in normal logs or status output.
 
-### 4.4 Workspace manager
+### 4.5 Workspace manager
 
 The workspace manager clones the requested target repository into a deterministic path under `/content/workspaces`.
 
@@ -144,7 +166,7 @@ Dirty worktrees are preserved. Destructive reset/clean operations are forbidden 
 
 GitHub authentication may use a token supplied through Colab Secrets or an already configured credential path.
 
-### 4.5 Service supervisor
+### 4.6 Service supervisor
 
 Each managed service implements a common lifecycle contract:
 
@@ -260,10 +282,13 @@ The runtime must not execute arbitrary code from the target repository merely be
 
 ## 9. Testing strategy
 
-The Go core is designed around injectable process execution, filesystem paths, clocks, and HTTP probes so lifecycle behavior can be unit-tested without a real Colab session.
+The Go core is designed around injectable process execution, filesystem paths, clocks, and HTTP probes so lifecycle behavior can be unit-tested without a real Colab session. The Python bootstrap is tested separately as a narrow adapter with mocked Colab Secrets, architecture detection, release resolution, checksum verification, and handoff.
 
 Required deterministic coverage includes:
 
+- Python bootstrap secret acquisition without secret leakage;
+- Python architecture/release selection and checksum failure handling;
+- Python-to-Go handoff without Python retaining runtime ownership;
 - configuration validation;
 - workspace preservation on dirty repositories;
 - service dependency ordering;
@@ -285,7 +310,6 @@ The intended source layout is:
 
 ```text
 cmd/colabnomad/
-internal/bootstrap/
 internal/config/
 internal/workspace/
 internal/supervisor/
@@ -294,8 +318,9 @@ internal/services/opencode/
 internal/services/terminal/
 internal/services/tunnel/
 internal/state/
-colab/
-notebook/
+colab/bootstrap.py
+colab/test_bootstrap.py
+notebook/colabnomad.ipynb
 docs/
 ```
 
@@ -303,7 +328,8 @@ Files should be split by responsibility rather than accumulating orchestration i
 
 ## 11. Design decisions
 
-- **Go over Zig for v0.1:** prioritize mature process, HTTP, concurrency, and testing primitives over minimum possible binary size.
+- **Python + Go for v0.1:** Python is the smallest native bridge to Colab APIs; Go is the authoritative runtime because process control, HTTP, concurrency, static distribution, cross-compilation, and testing are all first-class without requiring a heavyweight runtime.
+- **No gratuitous polyglot expansion:** Rust, Zig, C#, Dart, Nim, or other languages require a concrete subsystem-level benefit before entering the repository.
 - **Repository-driven runtime:** notebook cells are not the source of operational truth.
 - **tmux behind ttyd:** browser reconnects must not destroy the working shell.
 - **Quick Tunnel first:** optimize initial usability while keeping the tunnel interface replaceable.
@@ -315,7 +341,7 @@ Files should be split by responsibility rather than accumulating orchestration i
 
 v0.1 is complete only when a fresh CPU Colab runtime can use the repository notebook to:
 
-1. bootstrap ColabNomad without manual shell preparation;
+1. use the Python Colab adapter to bootstrap a verified ColabNomad Go binary without manual shell preparation;
 2. clone a selected target repository;
 3. launch OpenCode and a tmux-backed browser terminal;
 4. expose authenticated usable endpoints;
