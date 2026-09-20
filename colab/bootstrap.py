@@ -69,6 +69,9 @@ def download_verified(url, integrity, dst):
                     break
                 digest.update(chunk)
                 output.write(chunk)
+    except urllib.error.HTTPError:
+        destination.unlink(missing_ok=True)
+        raise
     except OSError as exc:
         destination.unlink(missing_ok=True)
         raise BootstrapError("download failed") from exc
@@ -105,9 +108,15 @@ def try_release(config, repo_root):
     except OSError as exc:
         raise BootstrapError("release lookup failed") from exc
     expected = _checksum_for(checksums, name)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
     target_dir = config.state_dir / "bin"
-    with tempfile.TemporaryDirectory(dir=str(config.state_dir) if config.state_dir.exists() else None) as tmp:
-        downloaded = download_verified(base + "/" + name, "sha256:" + expected, Path(tmp) / name)
+    with tempfile.TemporaryDirectory(dir=str(config.state_dir)) as tmp:
+        try:
+            downloaded = download_verified(base + "/" + name, "sha256:" + expected, Path(tmp) / name)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / "colabnomad"
         downloaded.replace(target)
@@ -119,10 +128,12 @@ def _safe_extract(archive, destination):
     destination = Path(destination).resolve()
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar.getmembers():
+            if member.issym() or member.islnk():
+                raise BootstrapError("Go archive contains a link")
             target = (destination / member.name).resolve()
             if target != destination and destination not in target.parents:
                 raise BootstrapError("unsafe Go archive path")
-        tar.extractall(destination)
+        tar.extractall(destination, filter="data")
 
 
 def build_checked_out(config, repo_root):
@@ -138,7 +149,8 @@ def build_checked_out(config, repo_root):
     toolchain = config.state_dir / "toolchains" / ("go-" + version)
     go = toolchain / "bin" / "go"
     if not go.exists():
-        with tempfile.TemporaryDirectory() as tmp:
+        config.state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(config.state_dir)) as tmp:
             archive = download_verified(artifact["url"], artifact["integrity"], Path(tmp) / "go.tgz")
             toolchain.parent.mkdir(parents=True, exist_ok=True)
             extract_dir = Path(tmp) / "extract"
@@ -193,7 +205,8 @@ def main(argv=None):
     parser.add_argument("--state-dir", type=Path, default=Path("/content/.colabnomad"))
     args = parser.parse_args(argv)
     config = BootstrapConfig(args.target_repo, args.target_ref, args.release, args.state_dir)
-    binary = build_checked_out(config, Path.cwd())
+    repo_root = Path(__file__).resolve().parents[1]
+    binary = build_checked_out(config, repo_root)
     return run_up(binary, config, collect_colab_secrets())
 
 

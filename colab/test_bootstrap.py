@@ -106,6 +106,63 @@ class BootstrapTests(unittest.TestCase):
         ):
             self.assertIsNone(bootstrap.try_release(config, Path(tmp)))
 
+    def test_missing_release_binary_falls_back_on_404(self):
+        payload = b"binary"
+        digest = hashlib.sha256(payload).hexdigest()
+        error = HTTPError("url", 404, "missing", {}, None)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            bootstrap.urllib.request, "urlopen", side_effect=[
+                io.BytesIO((digest + "  colabnomad-linux-amd64\n").encode()), error
+            ]):
+            config = bootstrap.BootstrapConfig("owner/repo", release="v0.1.0", state_dir=Path(tmp) / "state")
+            self.assertIsNone(bootstrap.try_release(config, Path(tmp)))
+
+    def test_release_temporary_download_is_under_state_dir(self):
+        payload = b"binary"
+        digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            config = bootstrap.BootstrapConfig("owner/repo", release="v0.1.0", state_dir=state_dir)
+            downloaded_paths = []
+
+            def fake_download(url, integrity, dst):
+                downloaded_paths.append(Path(dst))
+                Path(dst).write_bytes(payload)
+                return Path(dst)
+
+            with mock.patch.object(bootstrap.urllib.request, "urlopen", return_value=io.BytesIO(
+                (digest + "  colabnomad-linux-amd64\n").encode()
+            )), mock.patch.object(bootstrap, "download_verified", side_effect=fake_download):
+                bootstrap.try_release(config, Path(tmp))
+            self.assertTrue(downloaded_paths[0].is_relative_to(state_dir))
+
+    def test_main_uses_checkout_root_when_cwd_is_elsewhere(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            with mock.patch.object(bootstrap, "build_checked_out", return_value=Path("binary")) as build, \
+                 mock.patch.object(bootstrap, "collect_colab_secrets", return_value={}), \
+                 mock.patch.object(bootstrap, "run_up", return_value=0):
+                original_cwd = os.getcwd()
+                os.chdir(elsewhere)
+                try:
+                    self.assertEqual(bootstrap.main(["--target-repo", "owner/repo"]), 0)
+                finally:
+                    os.chdir(original_cwd)
+            self.assertEqual(build.call_args.args[1], Path(bootstrap.__file__).resolve().parents[1])
+
+    def test_go_archive_links_are_rejected(self):
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            link = tarfile.TarInfo("go/bin/go")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside"
+            tar.addfile(link)
+        archive.seek(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "go.tgz"
+            archive_path.write_bytes(archive.read())
+            with self.assertRaises(bootstrap.BootstrapError):
+                bootstrap._safe_extract(archive_path, Path(tmp) / "extract")
+
     def test_run_up_returns_after_foreground_subprocess(self):
         config = bootstrap.BootstrapConfig("owner/repo")
         with mock.patch.object(bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
