@@ -216,15 +216,20 @@ browser -> tunnel -> ttyd -> tmux session -> shell -> target workspace
 
 The terminal endpoint requires authentication generated or supplied at startup.
 
-### 5.3 Cloudflare tunnel
+### 5.3 Tunnel providers
 
-v0.1 uses Cloudflare Quick Tunnel as the zero-configuration transport. It runs one independent Quick Tunnel for OpenCode and one for the terminal, avoiding a reverse proxy dependency in the first release.
+Tunnel transport is capability-driven. A provider declares at minimum whether it supports HTTP streaming/SSE and WebSocket traffic before it can be assigned to a managed service.
 
-ColabNomad parses each assigned public URL, verifies that each tunnel process remains alive, and probes the exposed service before reporting readiness.
+v0.1 ships two providers:
 
-Tunnel loss must not terminate the underlying OpenCode or tmux sessions.
+- **Serveo/OpenSSH:** zero-config default for OpenCode and the terminal; it is invoked through the system `ssh` client and must pass a real SSE smoke test before it is accepted for OpenCode.
+- **Cloudflare Quick Tunnel:** supported for services that do not require SSE, including the ttyd terminal; it must never be selected for OpenCode while Quick Tunnel lacks SSE support.
 
-A stable Named Tunnel is a later feature and must fit behind the same tunnel interface.
+The tunnel interface owns process startup, public URL discovery, readiness, capability reporting, and lifecycle observation. Tunnel loss must not terminate the underlying OpenCode or tmux sessions.
+
+Provider selection must fail closed: if a service requires a transport capability that the selected provider does not declare, startup stops with a diagnostic instead of launching a known-incompatible route.
+
+Cloudflare Named Tunnel, ngrok, Tailscale Funnel, localhost.run, or other transports can be added later behind the same provider contract without changing OpenCode, terminal, or supervisor semantics.
 
 ## 6. Startup order
 
@@ -236,7 +241,7 @@ The required startup order is:
 4. start tmux session;
 5. start ttyd and verify local readiness;
 6. start OpenCode and verify local API readiness;
-7. establish independent public tunnels for OpenCode and the terminal;
+7. select capability-compatible tunnel providers and establish public endpoints for OpenCode and the terminal;
 8. verify public reachability where technically possible;
 9. persist runtime state;
 10. print one concise connection summary.
@@ -261,7 +266,7 @@ Every user-visible failure must identify:
 - tmux session;
 - ttyd process/readiness;
 - OpenCode process/API readiness;
-- cloudflared process/tunnel state;
+- configured tunnel-provider process/state and declared capabilities;
 - expected local ports.
 
 Normal status output must redact secrets and credentials.
@@ -293,6 +298,8 @@ Required deterministic coverage includes:
 - workspace preservation on dirty repositories;
 - service dependency ordering;
 - successful readiness transition;
+- tunnel capability rejection for incompatible service/provider pairs;
+- SSE smoke-test success and streaming/buffering failure classification;
 - bounded restart/backoff;
 - process exit before readiness;
 - timeout during readiness;
@@ -332,7 +339,7 @@ Files should be split by responsibility rather than accumulating orchestration i
 - **No gratuitous polyglot expansion:** Rust, Zig, C#, Dart, Nim, or other languages require a concrete subsystem-level benefit before entering the repository.
 - **Repository-driven runtime:** notebook cells are not the source of operational truth.
 - **tmux behind ttyd:** browser reconnects must not destroy the working shell.
-- **Quick Tunnel first:** optimize initial usability while keeping the tunnel interface replaceable.
+- **Capability-driven tunnels:** Serveo/OpenSSH is the zero-config default because OpenCode requires SSE; Cloudflare Quick Tunnel remains available only where its declared capabilities are compatible. Providers must pass protocol-level smoke tests before release.
 - **Git as durability boundary:** loss of the Colab VM must be treated as normal.
 - **No automatic Git mutation in v0.1:** warnings and status are safer than implicit commits/pushes until recovery semantics are designed.
 - **Explicit health probes:** process existence alone is insufficient evidence of readiness.
@@ -344,7 +351,7 @@ v0.1 is complete only when a fresh CPU Colab runtime can use the repository note
 1. use the Python Colab adapter to bootstrap a verified ColabNomad Go binary without manual shell preparation;
 2. clone a selected target repository;
 3. launch OpenCode and a tmux-backed browser terminal;
-4. expose authenticated usable endpoints;
+4. expose authenticated usable endpoints through capability-compatible tunnel providers, with OpenCode SSE verified end-to-end;
 5. report health and logs through the CLI;
 6. restart an individual failed managed service without recreating the whole runtime;
 7. preserve a dirty target worktree during normal restart/recovery operations;
