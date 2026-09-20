@@ -16,10 +16,28 @@ type Manager struct {
 	mu               sync.RWMutex
 	state            map[string]State
 	handles          map[string]execx.ProcessHandle
+	generation       map[string]uint64
 	order            []string
 	readinessTimeout time.Duration
 	probeInterval    time.Duration
+	clock            Clock
 }
+
+// Timer and Clock isolate scheduling from wall-clock time. Production uses
+// real timers; tests can advance a fake clock without sleeping.
+type Timer interface {
+	C() <-chan time.Time
+	Stop() bool
+}
+
+type Clock interface{ NewTimer(time.Duration) Timer }
+
+type realClock struct{}
+type realTimer struct{ timer *time.Timer }
+
+func (realClock) NewTimer(d time.Duration) Timer { return &realTimer{timer: time.NewTimer(d)} }
+func (t *realTimer) C() <-chan time.Time         { return t.timer.C }
+func (t *realTimer) Stop() bool                  { return t.timer.Stop() }
 
 type ManagerOption func(*Manager)
 
@@ -28,6 +46,13 @@ func WithReadinessTimeout(timeout time.Duration) ManagerOption {
 }
 func WithProbeInterval(interval time.Duration) ManagerOption {
 	return func(m *Manager) { m.probeInterval = interval }
+}
+func WithClock(clock Clock) ManagerOption {
+	return func(m *Manager) {
+		if clock != nil {
+			m.clock = clock
+		}
+	}
 }
 
 func NewManager(services []Service, runner execx.ProcessRunner, policy RestartPolicy, options ...ManagerOption) *Manager {
@@ -47,7 +72,7 @@ func NewManager(services []Service, runner execx.ProcessRunner, policy RestartPo
 	if policy.MaxBackoff <= 0 {
 		policy.MaxBackoff = 8 * time.Second
 	}
-	m := &Manager{services: byName, runner: runner, policy: policy, state: make(map[string]State), handles: make(map[string]execx.ProcessHandle), readinessTimeout: 30 * time.Second, probeInterval: 100 * time.Millisecond}
+	m := &Manager{services: byName, runner: runner, policy: policy, state: make(map[string]State), handles: make(map[string]execx.ProcessHandle), generation: make(map[string]uint64), readinessTimeout: 30 * time.Second, probeInterval: 100 * time.Millisecond, clock: realClock{}}
 	for _, option := range options {
 		option(m)
 	}
@@ -111,7 +136,7 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool)
 }
 
 func (m *Manager) waitReady(ctx context.Context, name string, service Service, h execx.ProcessHandle) error {
-	deadline := time.NewTimer(m.readinessTimeout)
+	deadline := m.clock.NewTimer(m.readinessTimeout)
 	defer deadline.Stop()
 	for {
 		if err := service.Probe(ctx); err == nil {
@@ -122,9 +147,9 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 			return ctx.Err()
 		case <-h.Done():
 			return fmt.Errorf("process %q exited before readiness", name)
-		case <-deadline.C:
+		case <-deadline.C():
 			return fmt.Errorf("readiness timeout for %q", name)
-		case <-time.After(m.probeInterval):
+		case <-m.clock.NewTimer(m.probeInterval).C():
 		}
 	}
 }
@@ -133,6 +158,7 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 	<-h.Done()
 	m.mu.RLock()
 	current := m.handles[name] == h && m.state[name] == Healthy
+	generation := m.generation[name]
 	m.mu.RUnlock()
 	if !current {
 		return
@@ -142,13 +168,19 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 		if backoff > m.policy.MaxBackoff {
 			backoff = m.policy.MaxBackoff
 		}
-		timer := time.NewTimer(backoff)
+		if !m.isGenerationCurrent(name, generation) {
+			return
+		}
+		timer := m.clock.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			m.setState(name, Unhealthy)
 			return
-		case <-timer.C:
+		case <-timer.C():
+		}
+		if !m.isGenerationCurrent(name, generation) {
+			return
 		}
 		if err := m.startReadyMode(ctx, name, false); err != nil {
 			continue
@@ -168,6 +200,11 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	}
 	m.mu.Lock()
 	h := m.handles[name]
+	// Invalidate the monitored generation before stopping it. Otherwise its
+	// Done channel can wake the monitor after this method has begun.
+	delete(m.handles, name)
+	m.generation[name]++
+	m.state[name] = Stopped
 	m.mu.Unlock()
 	if h != nil {
 		if err := h.Stop(0); err != nil {
@@ -193,6 +230,8 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		name := m.order[i]
 		m.mu.Lock()
 		h := m.handles[name]
+		delete(m.handles, name)
+		m.generation[name]++
 		m.state[name] = Stopped
 		m.mu.Unlock()
 		if h != nil {
@@ -211,6 +250,12 @@ func (m *Manager) setState(name string, state State) {
 	m.mu.Lock()
 	m.state[name] = state
 	m.mu.Unlock()
+}
+
+func (m *Manager) isGenerationCurrent(name string, generation uint64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.generation[name] == generation && m.state[name] == Healthy
 }
 
 func (m *Manager) topologicalOrder() ([]string, error) {

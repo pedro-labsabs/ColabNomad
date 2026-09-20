@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,74 @@ type fakeRunner struct {
 	exit    bool
 }
 
+type fakeTimer struct {
+	clock   *fakeClock
+	due     time.Duration
+	ch      chan time.Time
+	stopped bool
+}
+
+func (t *fakeTimer) C() <-chan time.Time { return t.ch }
+func (t *fakeTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+type fakeClock struct {
+	mu     sync.Mutex
+	now    time.Duration
+	timers []*fakeTimer
+}
+
+func (c *fakeClock) NewTimer(d time.Duration) Timer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := &fakeTimer{clock: c, due: c.now + d, ch: make(chan time.Time, 1)}
+	c.timers = append(c.timers, t)
+	if t.due <= c.now {
+		t.stopped = true
+		t.ch <- time.Unix(0, int64(c.now))
+	}
+	return t
+}
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now += d
+	now := c.now
+	for _, t := range c.timers {
+		if !t.stopped && t.due <= now {
+			t.stopped = true
+			t.ch <- time.Unix(0, int64(now))
+		}
+	}
+	c.mu.Unlock()
+}
+func (c *fakeClock) pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if !t.stopped {
+			n++
+		}
+	}
+	return n
+}
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	for i := 0; i < 1000000 && !condition(); i++ {
+		runtime.Gosched()
+	}
+	if !condition() {
+		t.Fatal("condition did not become true")
+	}
+}
+
 func (r *fakeRunner) Start(s execx.ManagedSpec) (execx.ProcessHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -84,19 +153,31 @@ func TestManagerStartsDependenciesBeforeDependents(t *testing.T) {
 
 func TestManagerStopsAfterRestartBudget(t *testing.T) {
 	runner := &fakeRunner{exit: true}
-	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3, InitialBackoff: time.Millisecond, MaxBackoff: 4 * time.Millisecond})
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3}, WithClock(clock))
 	if err := m.StartAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for m.State("svc") != Unhealthy && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(500 * time.Millisecond)
+	waitFor(t, func() bool { return runner.count() == 2 })
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(time.Second)
+	for i := 0; i < 1000000 && runner.count() != 3; i++ {
+		runtime.Gosched()
 	}
+	if runner.count() != 3 {
+		t.Fatalf("after second advance starts=%d pending=%d state=%s", runner.count(), clock.pending(), m.State("svc"))
+	}
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(2 * time.Second)
+	waitFor(t, func() bool { return runner.count() == 4 })
+	waitFor(t, func() bool { return m.State("svc") == Unhealthy })
 	if m.State("svc") != Unhealthy {
 		t.Fatal("service did not become unhealthy")
 	}
-	if len(runner.starts) != 4 {
-		t.Fatalf("starts = %d, want 4", len(runner.starts))
+	if runner.count() != 4 {
+		t.Fatalf("starts = %d, want 4", runner.count())
 	}
 }
 
@@ -120,20 +201,69 @@ func TestManagerDetectsExitBeforeReadiness(t *testing.T) {
 func TestManagerCancelsRestartBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &fakeRunner{exit: true}
-	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3, InitialBackoff: time.Second})
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3, InitialBackoff: time.Second}, WithClock(clock))
 	if err := m.StartAll(ctx); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
-	deadline := time.Now().Add(time.Second)
-	for m.State("svc") != Unhealthy && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, func() bool { return m.State("svc") == Unhealthy })
 	if m.State("svc") != Unhealthy {
 		t.Fatal("cancellation did not stop backoff")
 	}
 	if runner.count() != 1 {
 		t.Fatalf("starts = %d, want 1", runner.count())
+	}
+}
+
+func TestManagerReadinessTimeout(t *testing.T) {
+	clock := &fakeClock{}
+	svc := &testService{name: "svc", probeErr: fmt.Errorf("not ready"), log: &[]string{}, mu: &sync.Mutex{}}
+	m := NewManager([]Service{svc}, &fakeRunner{}, RestartPolicy{MaxRestarts: 3}, WithClock(clock), WithReadinessTimeout(2*time.Second), WithProbeInterval(time.Second))
+	result := make(chan error, 1)
+	go func() { result <- m.StartAll(context.Background()) }()
+	waitFor(t, func() bool { return clock.pending() >= 1 })
+	clock.Advance(2 * time.Second)
+	select {
+	case err := <-result:
+		if err == nil || !contains(err, "readiness timeout") {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness did not time out")
+	}
+}
+
+func TestManagerExplicitRestartDoesNotTriggerAutomaticRestart(t *testing.T) {
+	runner := &fakeRunner{}
+	svc := &testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}
+	m := NewManager([]Service{svc}, runner, RestartPolicy{MaxRestarts: 3})
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Restart(context.Background(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	if runner.count() != 2 {
+		t.Fatalf("starts = %d, want exactly 2", runner.count())
+	}
+}
+
+func TestManagerStopsInReverseDependencyOrder(t *testing.T) {
+	var log []string
+	mu := &sync.Mutex{}
+	leaf := &testService{name: "leaf", log: &log, mu: mu}
+	middle := &testService{name: "middle", deps: []string{"leaf"}, log: &log, mu: mu}
+	root := &testService{name: "root", deps: []string{"middle"}, log: &log, mu: mu}
+	m := NewManager([]Service{root, middle, leaf}, &fakeRunner{}, RestartPolicy{MaxRestarts: 3})
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StopAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := log[len(log)-3:]; !reflect.DeepEqual(got, []string{"cleanup:root", "cleanup:middle", "cleanup:leaf"}) {
+		t.Fatalf("cleanup order = %v", got)
 	}
 }
 
