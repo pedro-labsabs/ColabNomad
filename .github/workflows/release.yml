@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Run Go race tests
+        run: go test -race ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Run Python tests
+        run: python3 -m unittest colab.test_bootstrap notebook.test_notebook -v
+
+      - name: Build ColabNomad
+        run: go build -trimpath ./cmd/colabnomad
+
+      - name: Check diff
+        run: git diff --check
+
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+
+      - name: Run Serveo SSE live gate
+        run: COLABNOMAD_LIVE_TUNNEL_TEST=1 go test -tags=live ./tests/smoke -run TestServeoSSE -v
+
+  release:
+    needs:
+      - verify
+      - live
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+
+      - name: Build Linux amd64 binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/colabnomad-linux-amd64 ./cmd/colabnomad
+
+      - name: Build Linux arm64 binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/colabnomad-linux-arm64 ./cmd/colabnomad
+
+      - name: Generate checksums
+        run: (cd dist && sha256sum colabnomad-linux-* > SHA256SUMS)
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
