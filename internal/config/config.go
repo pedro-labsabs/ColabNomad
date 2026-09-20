@@ -17,10 +17,10 @@ type RuntimeConfig struct {
 
 func Default(repoURL string) RuntimeConfig {
 	return RuntimeConfig{
-		StateDir:       "/content/colabnomad",
-		WorkspaceRoot:  "/content/colabnomad/workspace",
+		StateDir:       "/content/.colabnomad",
+		WorkspaceRoot:  "/content/workspaces",
 		RepoURL:        repoURL,
-		RepoRef:        "main",
+		RepoRef:        "",
 		OpenCodePort:   4096,
 		TerminalPort:   7681,
 		OpenCodeTunnel: TunnelServeo,

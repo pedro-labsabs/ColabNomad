@@ -10,6 +10,12 @@ func TestDefaultConfigUsesServeoAndLocalhost(t *testing.T) {
 	if got.OpenCodePort != 4096 || got.TerminalPort != 7681 {
 		t.Fatal(got)
 	}
+	if got.StateDir != "/content/.colabnomad" || got.WorkspaceRoot != "/content/workspaces" {
+		t.Fatalf("unexpected paths: %+v", got)
+	}
+	if got.RepoRef != "" {
+		t.Fatalf("expected optional repo ref to be empty, got %q", got.RepoRef)
+	}
 }
 
 func TestPlatformKey(t *testing.T) {
