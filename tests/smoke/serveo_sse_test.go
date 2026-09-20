@@ -52,8 +52,9 @@ func TestServeoSSE(t *testing.T) {
 		if ctx.Err() != nil {
 			t.Fatal(ctx.Err())
 		}
-		stdout, _ := os.ReadFile(filepath.Join(state, "serveo.stdout.log"))
-		stderr, _ := os.ReadFile(filepath.Join(state, "serveo.stderr.log"))
+		command := provider.Command(mustPort(t, port), state)
+		stdout, _ := os.ReadFile(command.StdoutPath)
+		stderr, _ := os.ReadFile(command.StderrPath)
 		publicURL, err = provider.DiscoverURL(string(stdout) + string(stderr))
 		if err == nil {
 			break

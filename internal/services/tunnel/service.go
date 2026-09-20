@@ -35,7 +35,16 @@ func NewService(provider Provider, local supervisor.Service, stateDir string, lo
 	return &Service{Provider: provider, Local: local, StateDir: stateDir, LocalPort: localPort}
 }
 
-func (s *Service) Name() string { return "tunnel" }
+func (s *Service) Name() string {
+	dependency := s.Dependency
+	if s.Local != nil {
+		dependency = s.Local.Name()
+	}
+	if dependency == "" {
+		return "tunnel"
+	}
+	return "tunnel:" + dependency
+}
 func (s *Service) Dependencies() []string {
 	if s.Local != nil {
 		return []string{s.Local.Name()}
@@ -47,6 +56,9 @@ func (s *Service) Dependencies() []string {
 }
 
 func (s *Service) Prepare(context.Context) error {
+	if s.Local == nil && s.Dependency == "" {
+		return fmt.Errorf("tunnel local dependency is required")
+	}
 	if err := Validate(s.Provider, s.Requirements); err != nil {
 		return err
 	}

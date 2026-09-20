@@ -20,8 +20,8 @@ func (c *Cloudflare) Capabilities() Capabilities { return Capabilities{WebSocket
 func (c *Cloudflare) Command(localPort int, stateDir string) execx.ManagedSpec {
 	return execx.ManagedSpec{
 		Spec:       execx.Spec{Path: c.Binary, Args: []string{"tunnel", "--no-autoupdate", "--url", fmt.Sprintf("http://127.0.0.1:%d", localPort)}},
-		StdoutPath: filepath.Join(stateDir, "cloudflare.stdout.log"),
-		StderrPath: filepath.Join(stateDir, "cloudflare.stderr.log"),
+		StdoutPath: filepath.Join(stateDir, fmt.Sprintf("cloudflare.%d.stdout.log", localPort)),
+		StderrPath: filepath.Join(stateDir, fmt.Sprintf("cloudflare.%d.stderr.log", localPort)),
 	}
 }
 

@@ -4,10 +4,22 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 )
+
+type namedLocalService struct{ name string }
+
+func (s namedLocalService) Name() string                  { return s.name }
+func (s namedLocalService) Dependencies() []string        { return nil }
+func (s namedLocalService) Prepare(context.Context) error { return nil }
+func (s namedLocalService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s namedLocalService) Probe(context.Context) error   { return nil }
+func (s namedLocalService) Cleanup(context.Context) error { return nil }
 
 func TestCloudflareQuickRejectedForOpenCode(t *testing.T) {
 	err := Validate(NewCloudflare("/bin/cloudflared"), Requirements{SSE: true})
@@ -19,6 +31,32 @@ func TestCloudflareQuickRejectedForOpenCode(t *testing.T) {
 func TestServeoSatisfiesOpenCodeRequirements(t *testing.T) {
 	if err := Validate(NewServeo("/usr/bin/ssh", "/state/known_hosts"), Requirements{SSE: true}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTunnelServicesHaveDistinctDependencyNames(t *testing.T) {
+	terminal := NewService(NewServeo("ssh", ""), namedLocalService{name: "terminal"}, "/state", 7681)
+	opencode := NewService(NewServeo("ssh", ""), namedLocalService{name: "opencode"}, "/state", 4096)
+	if terminal.Name() != "tunnel:terminal" || opencode.Name() != "tunnel:opencode" {
+		t.Fatalf("names = %q, %q", terminal.Name(), opencode.Name())
+	}
+	if !reflect.DeepEqual(terminal.Dependencies(), []string{"terminal"}) || !reflect.DeepEqual(opencode.Dependencies(), []string{"opencode"}) {
+		t.Fatalf("dependencies = %#v, %#v", terminal.Dependencies(), opencode.Dependencies())
+	}
+}
+
+func TestTunnelPrepareRequiresDependency(t *testing.T) {
+	s := NewService(NewServeo("ssh", ""), nil, t.TempDir(), 7681)
+	if err := s.Prepare(context.Background()); err == nil {
+		t.Fatal("tunnel without a local dependency was accepted")
+	}
+}
+
+func TestServeoCommandsUseDisjointOutputPaths(t *testing.T) {
+	first := NewServeo("/usr/bin/ssh", "/state/known_hosts").Command(4096, "/state")
+	second := NewServeo("/usr/bin/ssh", "/state/known_hosts").Command(7681, "/state")
+	if first.StdoutPath == second.StdoutPath || first.StderrPath == second.StderrPath {
+		t.Fatalf("Serveo output paths overlap: %#v and %#v", first, second)
 	}
 }
 

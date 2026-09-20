@@ -35,8 +35,8 @@ func (s *Serveo) Command(localPort int, stateDir string) execx.ManagedSpec {
 			"-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHosts,
 			"-R", fmt.Sprintf("80:127.0.0.1:%d", localPort), "serveo.net",
 		}},
-		StdoutPath: filepath.Join(stateDir, "serveo.stdout.log"),
-		StderrPath: filepath.Join(stateDir, "serveo.stderr.log"),
+		StdoutPath: filepath.Join(stateDir, fmt.Sprintf("serveo.%d.stdout.log", localPort)),
+		StderrPath: filepath.Join(stateDir, fmt.Sprintf("serveo.%d.stderr.log", localPort)),
 	}
 }
 
