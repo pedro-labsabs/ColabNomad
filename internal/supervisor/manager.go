@@ -1,0 +1,251 @@
+package supervisor
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
+)
+
+type Manager struct {
+	services         map[string]Service
+	runner           execx.ProcessRunner
+	policy           RestartPolicy
+	mu               sync.RWMutex
+	state            map[string]State
+	handles          map[string]execx.ProcessHandle
+	order            []string
+	readinessTimeout time.Duration
+	probeInterval    time.Duration
+}
+
+type ManagerOption func(*Manager)
+
+func WithReadinessTimeout(timeout time.Duration) ManagerOption {
+	return func(m *Manager) { m.readinessTimeout = timeout }
+}
+func WithProbeInterval(interval time.Duration) ManagerOption {
+	return func(m *Manager) { m.probeInterval = interval }
+}
+
+func NewManager(services []Service, runner execx.ProcessRunner, policy RestartPolicy, options ...ManagerOption) *Manager {
+	byName := make(map[string]Service, len(services))
+	for _, service := range services {
+		byName[service.Name()] = service
+	}
+	if policy.MaxRestarts == 0 {
+		policy.MaxRestarts = 3
+	}
+	if policy.MaxRestarts < 0 {
+		policy.MaxRestarts = 0
+	}
+	if policy.InitialBackoff <= 0 {
+		policy.InitialBackoff = 500 * time.Millisecond
+	}
+	if policy.MaxBackoff <= 0 {
+		policy.MaxBackoff = 8 * time.Second
+	}
+	m := &Manager{services: byName, runner: runner, policy: policy, state: make(map[string]State), handles: make(map[string]execx.ProcessHandle), readinessTimeout: 30 * time.Second, probeInterval: 100 * time.Millisecond}
+	for _, option := range options {
+		option(m)
+	}
+	return m
+}
+
+func (m *Manager) State(name string) State { m.mu.RLock(); defer m.mu.RUnlock(); return m.state[name] }
+
+func (m *Manager) StartAll(ctx context.Context) error {
+	order, err := m.topologicalOrder()
+	if err != nil {
+		return err
+	}
+	m.order = order
+	for _, name := range order {
+		if err := m.startReady(ctx, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) startReady(ctx context.Context, name string) error {
+	return m.startReadyMode(ctx, name, true)
+}
+
+func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool) error {
+	service := m.services[name]
+	for _, dep := range service.Dependencies() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if m.State(dep) != Healthy {
+			return fmt.Errorf("dependency %q is not healthy for %q", dep, name)
+		}
+	}
+	if err := service.Prepare(ctx); err != nil {
+		return fmt.Errorf("prepare %q: %w", name, err)
+	}
+	m.setState(name, Starting)
+	h, err := m.runner.Start(service.Command())
+	if err != nil {
+		m.setState(name, Unhealthy)
+		return fmt.Errorf("start %q: %w", name, err)
+	}
+	m.mu.Lock()
+	m.handles[name] = h
+	m.mu.Unlock()
+	if err := m.waitReady(ctx, name, service, h); err != nil {
+		m.setState(name, Unhealthy)
+		_ = h.Stop(0)
+		return err
+	}
+	m.setState(name, Healthy)
+	if monitor {
+		go m.monitor(ctx, name, service, h)
+	}
+	return nil
+}
+
+func (m *Manager) waitReady(ctx context.Context, name string, service Service, h execx.ProcessHandle) error {
+	deadline := time.NewTimer(m.readinessTimeout)
+	defer deadline.Stop()
+	for {
+		if err := service.Probe(ctx); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-h.Done():
+			return fmt.Errorf("process %q exited before readiness", name)
+		case <-deadline.C:
+			return fmt.Errorf("readiness timeout for %q", name)
+		case <-time.After(m.probeInterval):
+		}
+	}
+}
+
+func (m *Manager) monitor(ctx context.Context, name string, service Service, h execx.ProcessHandle) {
+	<-h.Done()
+	m.mu.RLock()
+	current := m.handles[name] == h && m.state[name] == Healthy
+	m.mu.RUnlock()
+	if !current {
+		return
+	}
+	for restart := 0; restart < m.policy.MaxRestarts; restart++ {
+		backoff := m.policy.InitialBackoff << restart
+		if backoff > m.policy.MaxBackoff {
+			backoff = m.policy.MaxBackoff
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			m.setState(name, Unhealthy)
+			return
+		case <-timer.C:
+		}
+		if err := m.startReadyMode(ctx, name, false); err != nil {
+			continue
+		}
+		m.mu.RLock()
+		next := m.handles[name]
+		m.mu.RUnlock()
+		<-next.Done()
+	}
+	m.setState(name, Unhealthy)
+}
+
+func (m *Manager) Restart(ctx context.Context, name string) error {
+	service, ok := m.services[name]
+	if !ok {
+		return fmt.Errorf("unknown service %q", name)
+	}
+	m.mu.Lock()
+	h := m.handles[name]
+	m.mu.Unlock()
+	if h != nil {
+		if err := h.Stop(0); err != nil {
+			return err
+		}
+	}
+	if err := service.Cleanup(ctx); err != nil {
+		return err
+	}
+	return m.startReady(ctx, name)
+}
+
+func (m *Manager) StopAll(ctx context.Context) error {
+	if len(m.order) == 0 {
+		var err error
+		m.order, err = m.topologicalOrder()
+		if err != nil {
+			return err
+		}
+	}
+	var first error
+	for i := len(m.order) - 1; i >= 0; i-- {
+		name := m.order[i]
+		m.mu.Lock()
+		h := m.handles[name]
+		m.state[name] = Stopped
+		m.mu.Unlock()
+		if h != nil {
+			if err := h.Stop(0); err != nil && first == nil {
+				first = err
+			}
+		}
+		if err := m.services[name].Cleanup(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (m *Manager) setState(name string, state State) {
+	m.mu.Lock()
+	m.state[name] = state
+	m.mu.Unlock()
+}
+
+func (m *Manager) topologicalOrder() ([]string, error) {
+	const (
+		unseen   = 0
+		visiting = 1
+		visited  = 2
+	)
+	marks := make(map[string]int)
+	order := make([]string, 0, len(m.services))
+	var visit func(string) error
+	visit = func(name string) error {
+		if _, ok := m.services[name]; !ok {
+			return fmt.Errorf("unknown dependency %q", name)
+		}
+		if marks[name] == visiting {
+			return fmt.Errorf("dependency cycle involving %q", name)
+		}
+		if marks[name] == visited {
+			return nil
+		}
+		marks[name] = visiting
+		for _, dep := range m.services[name].Dependencies() {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		marks[name] = visited
+		order = append(order, name)
+		return nil
+	}
+	for name := range m.services {
+		if err := visit(name); err != nil {
+			return nil, err
+		}
+	}
+	return order, nil
+}
