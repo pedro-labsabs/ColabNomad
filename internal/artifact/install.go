@@ -2,6 +2,8 @@ package artifact
 
 import (
 	"archive/tar"
+	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -125,7 +127,19 @@ func extractMember(archivePath, member, dst string) error {
 	}
 	outName, found := out.Name(), false
 	defer os.Remove(outName)
-	tr := tar.NewReader(in)
+	buffered := bufio.NewReader(in)
+	archiveReader := io.Reader(buffered)
+	var gzipReader *gzip.Reader
+	if signature, peekErr := buffered.Peek(2); peekErr == nil && signature[0] == 0x1f && signature[1] == 0x8b {
+		gzipReader, err = gzip.NewReader(buffered)
+		if err != nil {
+			out.Close()
+			return fmt.Errorf("open gzip artifact archive: %w", err)
+		}
+		defer gzipReader.Close()
+		archiveReader = gzipReader
+	}
+	tr := tar.NewReader(archiveReader)
 	for {
 		hdr, readErr := tr.Next()
 		if readErr == io.EOF {
@@ -141,6 +155,10 @@ func extractMember(archivePath, member, dst string) error {
 		}
 		if hdr.Name != member {
 			continue
+		}
+		if found {
+			out.Close()
+			return fmt.Errorf("duplicate artifact member %q", member)
 		}
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
 			out.Close()

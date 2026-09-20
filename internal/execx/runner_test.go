@@ -17,6 +17,23 @@ func TestRunnerRunsOneShotCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerEnvOverridesInheritedVariableWithoutDroppingUnrelatedVariables(t *testing.T) {
+	t.Setenv("COLABNOMAD_RUNNER_OVERRIDE", "inherited")
+	t.Setenv("COLABNOMAD_RUNNER_UNRELATED", "preserved")
+	r := OSRunner{}
+	got, err := r.Run(context.Background(), Spec{
+		Path: "sh",
+		Args: []string{"-c", "printf '%s|%s' \"$COLABNOMAD_RUNNER_OVERRIDE\" \"$COLABNOMAD_RUNNER_UNRELATED\""},
+		Env:  map[string]string{"COLABNOMAD_RUNNER_OVERRIDE": "overridden"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Stdout != "overridden|preserved" {
+		t.Fatalf("unexpected environment: %q", got.Stdout)
+	}
+}
+
 func TestRunnerReturnsExitCodeOnFailure(t *testing.T) {
 	r := OSRunner{}
 	got, err := r.Run(context.Background(), Spec{Path: "sh", Args: []string{"-c", "printf nope >&2; exit 7"}})

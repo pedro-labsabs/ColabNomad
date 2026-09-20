@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 )
 
 type Spec struct {
@@ -30,9 +32,36 @@ func (OSRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	if spec.Env != nil {
-		cmd.Env = append([]string{}, os.Environ()...)
+		env := make(map[string]string)
+		inheritedOrder := make([]string, 0)
+		inherited := make(map[string]bool)
+		for _, entry := range os.Environ() {
+			key, value, ok := strings.Cut(entry, "=")
+			if !ok {
+				continue
+			}
+			if !inherited[key] {
+				inheritedOrder = append(inheritedOrder, key)
+				inherited[key] = true
+			}
+			env[key] = value
+		}
 		for key, value := range spec.Env {
-			cmd.Env = append(cmd.Env, key+"="+value)
+			env[key] = value
+		}
+		newKeys := make([]string, 0)
+		for key := range spec.Env {
+			if !inherited[key] {
+				newKeys = append(newKeys, key)
+			}
+		}
+		sort.Strings(newKeys)
+		cmd.Env = make([]string, 0, len(inheritedOrder)+len(newKeys))
+		for _, key := range inheritedOrder {
+			cmd.Env = append(cmd.Env, key+"="+env[key])
+		}
+		for _, key := range newKeys {
+			cmd.Env = append(cmd.Env, key+"="+env[key])
 		}
 	}
 	var stdout, stderr bytes.Buffer
