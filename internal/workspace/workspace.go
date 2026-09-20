@@ -21,6 +21,10 @@ type Manager struct {
 	Redact func(string, ...string) string
 }
 
+var createAskpass = func() (*os.File, error) {
+	return os.CreateTemp("", "colabnomad-askpass-*")
+}
+
 func (m Manager) Prepare(ctx context.Context, req Request) (Result, error) {
 	var result Result
 	if req.RepoURL == "" || req.Root == "" {
@@ -48,7 +52,10 @@ func (m Manager) Prepare(ctx context.Context, req Request) (Result, error) {
 			return result, fmt.Errorf("create workspace parent: %w", err)
 		}
 		spec := execx.Spec{Path: gitPath, Args: cloneArgs(req), Dir: filepath.Dir(req.Root)}
-		cleanup, env := askpass(req.GitHubToken)
+		cleanup, env, err := askpass(req.GitHubToken)
+		if err != nil {
+			return result, fmt.Errorf("prepare GitHub askpass: %w", err)
+		}
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -92,7 +99,10 @@ func cloneArgs(req Request) []string {
 
 func (m Manager) run(ctx context.Context, runner execx.Runner, gitPath, dir string, args []string, token string, redact func(string, ...string) string) (string, error) {
 	spec := execx.Spec{Path: gitPath, Args: args, Dir: dir}
-	cleanup, env := askpass(token)
+	cleanup, env, err := askpass(token)
+	if err != nil {
+		return "", fmt.Errorf("prepare GitHub askpass: %w", err)
+	}
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -106,24 +116,29 @@ func (m Manager) run(ctx context.Context, runner execx.Runner, gitPath, dir stri
 	return out.Stdout, nil
 }
 
-func askpass(token string) (func(), map[string]string) {
+func askpass(token string) (func(), map[string]string, error) {
 	if token == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	f, err := os.CreateTemp("", "colabnomad-askpass-*")
+	f, err := createAskpass()
 	if err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("create helper: %w", err)
 	}
 	name := f.Name()
 	cleanup := func() { _ = os.Remove(name) }
 	if _, err := f.WriteString("#!/bin/sh\nprintf '%s\\n' \"$COLABNOMAD_GITHUB_TOKEN\"\n"); err != nil {
 		f.Close()
 		cleanup()
-		return nil, nil
+		return nil, nil, fmt.Errorf("write helper: %w", err)
 	}
-	if err := f.Chmod(0700); err != nil || f.Close() != nil {
+	if err := f.Chmod(0700); err != nil {
+		f.Close()
 		cleanup()
-		return nil, nil
+		return nil, nil, fmt.Errorf("chmod helper: %w", err)
 	}
-	return cleanup, map[string]string{"GIT_ASKPASS": name, "GIT_TERMINAL_PROMPT": "0", "COLABNOMAD_GITHUB_TOKEN": token}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("close helper: %w", err)
+	}
+	return cleanup, map[string]string{"GIT_ASKPASS": name, "GIT_TERMINAL_PROMPT": "0", "COLABNOMAD_GITHUB_TOKEN": token}, nil
 }

@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,5 +41,20 @@ func TestStoreWritesStateAndCredentials0600(t *testing.T) {
 	}
 	if gotCreds != creds {
 		t.Fatalf("credentials round trip: %+v", gotCreds)
+	}
+}
+
+func TestRuntimeStateDoesNotPersistGitHubToken(t *testing.T) {
+	token := "tok:@,;\nsecret"
+	store := Store{Dir: t.TempDir()}
+	if err := store.Save(RuntimeState{WorkspacePath: "/tmp/work"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(store.Dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), token) {
+		t.Fatalf("token persisted in runtime state: %q", b)
 	}
 }
