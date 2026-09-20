@@ -170,6 +170,15 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result, 0)
         run.assert_called_once()
 
+    def test_run_up_hands_manifest_and_verified_binary_path_to_sanitized_process(self):
+        config = bootstrap.BootstrapConfig("owner/repo")
+        with mock.patch.object(bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            bootstrap.run_up(Path("/state/bin/colabnomad"), config, {"GITHUB_TOKEN": "x"}, Path("/checkout"))
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["COLABNOMAD_VERSIONS_FILE"], "/checkout/config/versions.json")
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], "/state/bin")
+        self.assertNotIn("x", repr(run.call_args.args[0]))
+
 
 if __name__ == "__main__":
     unittest.main()

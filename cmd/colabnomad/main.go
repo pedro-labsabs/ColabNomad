@@ -16,6 +16,15 @@ import (
 
 type cliOptions struct{ Command, Service, Repo, Ref, OpenCodeTunnel, TerminalTunnel, StateDir string }
 
+func requestPayload(o cliOptions) []byte {
+	if o.Command == "up" {
+		b, _ := json.Marshal(app.UpRequest{RepoURL: o.Repo, RepoRef: o.Ref, GitHubToken: os.Getenv("GITHUB_TOKEN"), OpenCodeAPIKey: os.Getenv("OPENCODE_API_KEY"), OpenCodeTunnel: config.TunnelProviderName(o.OpenCodeTunnel), TerminalTunnel: config.TunnelProviderName(o.TerminalTunnel)})
+		return b
+	}
+	b, _ := json.Marshal(o)
+	return b
+}
+
 func parseArgs(args []string) (cliOptions, error) {
 	if len(args) == 0 {
 		return cliOptions{}, fmt.Errorf("usage: colabnomad <up|status|doctor|logs|restart|down>")
@@ -76,10 +85,8 @@ func main() {
 		}
 		return
 	}
-	r := &app.Runtime{Config: config.Default(o.Repo)}
-	r.Config.StateDir = o.StateDir
 	c := control.Client{Socket: filepath.Join(o.StateDir, "control.sock")}
-	payload, _ := json.Marshal(o)
+	payload := requestPayload(o)
 	if err := control.EnsureDaemon(o.StateDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -92,19 +99,28 @@ func main() {
 	if len(resp.Payload) > 0 {
 		fmt.Println(string(resp.Payload))
 	}
-	_ = context.Background()
+	if o.Command == "doctor" {
+		var diagnosis struct {
+			Healthy bool `json:"healthy"`
+		}
+		if json.Unmarshal(resp.Payload, &diagnosis) == nil && !diagnosis.Healthy {
+			os.Exit(1)
+		}
+	}
 }
 
 func runDaemon(stateDir string) error {
 	r := &app.Runtime{Config: config.RuntimeConfig{StateDir: stateDir}, Probes: map[string]app.ProbeResult{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	s, err := control.NewServer(stateDir, func(req control.Request) control.Response {
 		switch req.Command {
 		case "up":
-			var v cliOptions
+			var v app.UpRequest
 			if err := json.Unmarshal(req.Payload, &v); err != nil {
 				return control.Response{Error: err.Error()}
 			}
-			summary, err := r.Up(context.Background(), app.UpRequest{RepoURL: v.Repo, RepoRef: v.Ref, OpenCodeTunnel: config.TunnelProviderName(v.OpenCodeTunnel), TerminalTunnel: config.TunnelProviderName(v.TerminalTunnel)})
+			summary, err := r.Up(context.Background(), v)
 			if err != nil {
 				return control.Response{Error: err.Error()}
 			}
@@ -135,6 +151,7 @@ func runDaemon(stateDir string) error {
 			if err := r.Down(context.Background()); err != nil {
 				return control.Response{Error: err.Error()}
 			}
+			cancel()
 			return control.Response{OK: true}
 		default:
 			return control.Response{Error: "unsupported daemon command"}
@@ -144,7 +161,5 @@ func runDaemon(stateDir string) error {
 		return err
 	}
 	defer s.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	return s.Serve(ctx)
 }

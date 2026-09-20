@@ -81,6 +81,10 @@ func NewManager(services []Service, runner execx.ProcessRunner, policy RestartPo
 
 func (m *Manager) State(name string) State { m.mu.RLock(); defer m.mu.RUnlock(); return m.state[name] }
 
+// Snapshot returns a copy of current service states for read-only status use.
+func (m *Manager) Snapshot() map[string]State { m.mu.RLock(); defer m.mu.RUnlock(); out := make(map[string]State, len(m.state)); for k, v := range m.state { out[k] = v }; return out }
+func (m *Manager) ServicePID(name string) int { m.mu.RLock(); defer m.mu.RUnlock(); if h := m.handles[name]; h != nil { return h.PID() }; return 0 }
+
 func (m *Manager) StartAll(ctx context.Context) error {
 	order, err := m.topologicalOrder()
 	if err != nil {
@@ -89,6 +93,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	m.order = order
 	for _, name := range order {
 		if err := m.startReady(ctx, name); err != nil {
+			_ = m.StopAll(context.Background())
 			return err
 		}
 	}

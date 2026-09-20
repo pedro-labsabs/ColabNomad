@@ -36,6 +36,19 @@ func TestDoctorClassifiesHealthyAndUnhealthyServices(t *testing.T) {
 	}
 }
 
+func TestDoctorClassifiesMissingWorkspaceToolAndProvider(t *testing.T) {
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: t.TempDir()}, WorkspacePath: t.TempDir() + "/missing", ToolChecks: map[string]error{"tool:opencode": context.Canceled}, ProviderChecks: map[string]error{"provider:opencode": context.Canceled}}
+	got := r.Doctor(context.Background())
+	for _, name := range []string{"workspace", "tool:opencode", "provider:opencode"} {
+		if got.Components[name] != "unhealthy" {
+			t.Fatalf("%s: %#v", name, got)
+		}
+	}
+	if got.Healthy {
+		t.Fatal("doctor reported unhealthy components as healthy")
+	}
+}
+
 func itoa(n int) string {
 	if n < 0 {
 		return "-"

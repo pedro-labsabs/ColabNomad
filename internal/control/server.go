@@ -6,12 +6,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Handler func(Request) Response
 type Server struct {
 	listener net.Listener
 	handler  Handler
+	path     string
 }
 
 func NewServer(stateDir string, handler Handler) (*Server, error) {
@@ -19,7 +21,13 @@ func NewServer(stateDir string, handler Handler) (*Server, error) {
 		return nil, err
 	}
 	path := filepath.Join(stateDir, "control.sock")
-	_ = os.Remove(path)
+	if c, err := net.DialTimeout("unix", path, 100*time.Millisecond); err == nil {
+		c.Close()
+		return nil, fmt.Errorf("control socket is already live")
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("listen control socket: %w", err)
@@ -29,7 +37,7 @@ func NewServer(stateDir string, handler Handler) (*Server, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return &Server{listener: l, handler: handler}, nil
+	return &Server{listener: l, handler: handler, path: path}, nil
 }
 func (s *Server) Serve(ctx context.Context) error {
 	go func() { <-ctx.Done(); s.listener.Close() }()
@@ -44,7 +52,17 @@ func (s *Server) Serve(ctx context.Context) error {
 		go serveConn(c, s.handler)
 	}
 }
-func (s *Server) Close() error { return s.listener.Close() }
+func (s *Server) Close() error {
+	err := s.listener.Close()
+	removeErr := os.Remove(s.path)
+	if os.IsNotExist(removeErr) {
+		removeErr = nil
+	}
+	if err != nil {
+		return err
+	}
+	return removeErr
+}
 func serveConn(c net.Conn, h Handler) error {
 	defer c.Close()
 	var req Request

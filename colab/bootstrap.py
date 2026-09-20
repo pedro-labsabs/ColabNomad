@@ -162,7 +162,7 @@ def build_checked_out(config, repo_root):
             extracted.replace(toolchain)
     output = config.state_dir / "bin" / "colabnomad"
     output.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
+    env = {key: os.environ[key] for key in ("HOME", "PATH", "LANG", "LC_ALL", "SHELL", "TERM", "TMPDIR") if key in os.environ}
     env.update({"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": platform_key().split("-", 1)[1]})
     subprocess.run(
         [str(go), "build", "-trimpath", "-ldflags", "-s -w", "-o", str(output), "./cmd/colabnomad"],
@@ -188,11 +188,15 @@ def collect_colab_secrets():
     return secrets
 
 
-def run_up(binary, config, secrets):
+def run_up(binary, config, secrets, repo_root=None):
     argv = [str(binary), "up", "--repo", config.target_repo]
     if config.target_ref:
         argv.extend(("--ref", config.target_ref))
+    binary_dir = str(Path(binary).resolve().parent)
     env = {key: os.environ[key] for key in ("HOME", "PATH", "LANG", "LC_ALL", "SHELL", "TERM", "TMPDIR") if key in os.environ}
+    env["PATH"] = binary_dir + os.pathsep + env.get("PATH", "")
+    checkout = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[1]
+    env["COLABNOMAD_VERSIONS_FILE"] = str(checkout / "config" / "versions.json")
     env.update(secrets)
     return subprocess.run(argv, env=env, check=False).returncode
 
@@ -207,7 +211,7 @@ def main(argv=None):
     config = BootstrapConfig(args.target_repo, args.target_ref, args.release, args.state_dir)
     repo_root = Path(__file__).resolve().parents[1]
     binary = build_checked_out(config, repo_root)
-    return run_up(binary, config, collect_colab_secrets())
+    return run_up(binary, config, collect_colab_secrets(), repo_root)
 
 
 if __name__ == "__main__":
