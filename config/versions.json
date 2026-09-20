@@ -1,0 +1,14 @@
+{
+  "bootstrap_go": {"version":"1.27.1","artifacts":{
+    "linux-amd64":{"url":"https://go.dev/dl/go1.27.1.linux-amd64.tar.gz","integrity":"sha256:63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"},
+    "linux-arm64":{"url":"https://go.dev/dl/go1.27.1.linux-arm64.tar.gz","integrity":"sha256:3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec"}}},
+  "opencode": {"version":"2.0.11","artifacts":{
+    "linux-amd64":{"url":"https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.11.tgz","integrity":"sha512-L+OgUSSTSu6chQrqL19boZ+xXxOzmETXwoKFXi/Pzpu79MRSuZkfPsunIBrf68qAIkgDaTC8HUXNvLZ80ZBLvQ==","member":"package/bin/opencode"},
+    "linux-arm64":{"url":"https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.11.tgz","integrity":"sha512-2dwuF+X1ONjWy6jvJocevd+GFeMz5e1j7Mz6N38Ao0vwBaAuqrCN7SrmYKn57EUilcPXcIi4xrxG/dP+rR94gA==","member":"package/bin/opencode"}}},
+  "ttyd": {"version":"1.7.7","artifacts":{
+    "linux-amd64":{"url":"https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64","integrity":"sha256:8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"},
+    "linux-arm64":{"url":"https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.aarch64","integrity":"sha256:b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165"}}},
+  "cloudflared": {"version":"2026.9.1","artifacts":{
+    "linux-amd64":{"url":"https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64","integrity":"sha256:03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc"},
+    "linux-arm64":{"url":"https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-arm64","integrity":"sha256:3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3"}}}
+}
