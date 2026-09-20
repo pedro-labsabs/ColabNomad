@@ -194,13 +194,13 @@ Restarts are bounded with exponential backoff so a persistent failure cannot cre
 
 OpenCode runs against the target workspace, not the ColabNomad repository.
 
-ColabNomad must pin or validate the OpenCode major/version expected by its adapter.
+ColabNomad must pin or validate the OpenCode major/version expected by its adapter. The initial v0.1 contract targets OpenCode v2 and runs its foreground server with `opencode serve` bound to `127.0.0.1`.
 
-The adapter creates ephemeral OpenCode configuration outside the target repository unless the user explicitly requests project-local configuration.
+The adapter creates ephemeral OpenCode configuration outside the target repository unless the user explicitly requests project-local configuration. It uses an explicit `OPENCODE_CONFIG` path under ColabNomad ephemeral state and disables OpenCode auto-update so the pinned binary cannot silently change itself.
 
-The public OpenCode endpoint requires authentication.
+The public OpenCode endpoint requires authentication. For the pinned v2 contract, the server uses Basic Auth and local readiness is proven with an authenticated JSON API request scoped to the target workspace, not by TCP-open checks or legacy v1 routes.
 
-Readiness is established using a real local API/health probe rather than only checking that a TCP port is open.
+Public streaming compatibility is proven against the v2 SSE endpoint `/api/event`; the first `server.connected` event or another valid SSE frame must arrive before the endpoint is considered ready.
 
 ### 5.2 Terminal
 
@@ -298,6 +298,7 @@ Required deterministic coverage includes:
 - workspace preservation on dirty repositories;
 - service dependency ordering;
 - successful readiness transition;
+- pinned OpenCode v2 CLI/API contract (`serve`, authenticated `/api/project`, SSE `/api/event`);
 - tunnel capability rejection for incompatible service/provider pairs;
 - SSE smoke-test success and streaming/buffering failure classification;
 - bounded restart/backoff;
