@@ -50,14 +50,14 @@ func (s *System) Ensure(ctx context.Context, binary, aptPackage string) (string,
 	}
 	s.mu.Lock()
 	needUpdate := !s.updated
-	if needUpdate {
-		s.updated = true
-	}
 	s.mu.Unlock()
 	if needUpdate {
 		if _, err := r.Run(ctx, execx.Spec{Path: apt, Args: []string{"-qq", "update"}}); err != nil {
 			return "", fmt.Errorf("update apt indexes: %w", err)
 		}
+		s.mu.Lock()
+		s.updated = true
+		s.mu.Unlock()
 	}
 	if _, err := r.Run(ctx, execx.Spec{Path: apt, Args: []string{"-qq", "install", "-y", aptPackage}}); err != nil {
 		return "", fmt.Errorf("install %s: %w", aptPackage, err)

@@ -9,7 +9,6 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/deps"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/health"
-	"github.com/pedroteste00000008-stack/ColabNomad/internal/secure"
 )
 
 const sessionName = "colabnomad"
@@ -20,6 +19,7 @@ type Service struct {
 	Workspace string
 	Password  string
 	Username  string
+	Binary    string
 	Port      int
 	Prober    health.Prober
 }
@@ -30,6 +30,9 @@ func (s *Service) Dependencies() []string { return nil }
 func (s *Service) Prepare(ctx context.Context) error {
 	if s.Workspace == "" {
 		return fmt.Errorf("terminal workspace is required")
+	}
+	if s.Password == "" {
+		return fmt.Errorf("terminal password is required")
 	}
 	if s.System == nil {
 		s.System = &deps.System{Runner: s.Runner}
@@ -42,9 +45,12 @@ func (s *Service) Prepare(ctx context.Context) error {
 	if r == nil {
 		r = execx.OSRunner{}
 	}
-	_, err = r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"has-session", "-t", sessionName}})
+	result, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"has-session", "-t", sessionName}})
 	if err == nil {
 		return nil
+	}
+	if result.ExitCode != 1 {
+		return fmt.Errorf("check tmux session: %w", err)
 	}
 	if _, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"new-session", "-d", "-s", sessionName, "-c", s.Workspace}}); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
@@ -53,14 +59,15 @@ func (s *Service) Prepare(ctx context.Context) error {
 }
 
 func (s *Service) Command() execx.ManagedSpec {
-	if s.Password == "" {
-		s.Password, _ = secure.RandomPassword(24)
-	}
 	port := s.Port
 	if port == 0 {
 		port = 7681
 	}
-	return execx.ManagedSpec{Spec: execx.Spec{Path: "ttyd", Args: []string{"-i", "127.0.0.1", "-p", strconv.Itoa(port), "-c", s.username() + ":" + s.Password, "-W", "-w", s.Workspace, "tmux", "attach-session", "-t", sessionName}, Dir: s.Workspace}}
+	binary := s.Binary
+	if binary == "" {
+		binary = "ttyd"
+	}
+	return execx.ManagedSpec{Spec: execx.Spec{Path: binary, Args: []string{"-i", "127.0.0.1", "-p", strconv.Itoa(port), "-c", s.username() + ":" + s.Password, "-W", "-w", s.Workspace, "tmux", "attach-session", "-t", sessionName}, Dir: s.Workspace}}
 }
 
 func (s *Service) username() string {
@@ -88,9 +95,11 @@ func (s *Service) DestroySession(ctx context.Context) error {
 	}
 	tmux := "tmux"
 	if s.System != nil {
-		if path, err := s.System.Ensure(ctx, "tmux", "tmux"); err == nil {
-			tmux = path
+		path, err := s.System.Ensure(ctx, "tmux", "tmux")
+		if err != nil {
+			return fmt.Errorf("resolve tmux: %w", err)
 		}
+		tmux = path
 	}
 	if _, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"kill-session", "-t", sessionName}}); err != nil {
 		return fmt.Errorf("destroy tmux session: %w", err)
