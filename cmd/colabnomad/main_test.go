@@ -74,6 +74,21 @@ func TestParseCLI(t *testing.T) {
 	}
 }
 
+func TestParseCLIHelp(t *testing.T) {
+	for _, arg := range []string{"--help", "-h", "help"} {
+		o, err := parseArgs([]string{arg})
+		if err != nil || o.Command != "help" {
+			t.Fatalf("%q: options=%#v err=%v", arg, o, err)
+		}
+	}
+	usage := cliUsage()
+	for _, command := range []string{"up", "status", "doctor", "logs", "restart", "down"} {
+		if !strings.Contains(usage, command) {
+			t.Errorf("help output omits %q: %q", command, usage)
+		}
+	}
+}
+
 func TestLifecyclePayloadsCarryOnlyRequestedService(t *testing.T) {
 	for _, command := range []string{"logs", "restart"} {
 		o, err := parseArgs([]string{command, "terminal"})

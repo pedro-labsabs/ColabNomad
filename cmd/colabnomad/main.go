@@ -18,6 +18,10 @@ import (
 
 type cliOptions struct{ Command, Service, Repo, Ref, OpenCodeTunnel, TerminalTunnel, StateDir string }
 
+func cliUsage() string {
+	return "usage: colabnomad <up|status|doctor|logs|restart|down>"
+}
+
 func controlTimeout(command string) time.Duration {
 	switch command {
 	case "up":
@@ -45,10 +49,15 @@ func serializedHandler(handler control.Handler) control.Handler {
 
 func parseArgs(args []string) (cliOptions, error) {
 	if len(args) == 0 {
-		return cliOptions{}, fmt.Errorf("usage: colabnomad <up|status|doctor|logs|restart|down>")
+		return cliOptions{}, fmt.Errorf("%s", cliUsage())
 	}
 	o := cliOptions{Command: args[0], OpenCodeTunnel: "serveo", TerminalTunnel: "serveo", StateDir: "/content/.colabnomad"}
 	switch o.Command {
+	case "--help", "-h", "help":
+		if len(args) != 1 {
+			return o, fmt.Errorf("usage: %s", o.Command)
+		}
+		o.Command = "help"
 	case "status", "doctor", "down":
 		if len(args) != 1 {
 			return o, fmt.Errorf("usage: %s", o.Command)
@@ -85,7 +94,7 @@ func parseArgs(args []string) (cliOptions, error) {
 			return o, err
 		}
 	default:
-		return o, fmt.Errorf("unknown command %q; usage: colabnomad up|status|doctor|logs|restart|down", o.Command)
+		return o, fmt.Errorf("unknown command %q; %s", o.Command, cliUsage())
 	}
 	return o, nil
 }
@@ -95,6 +104,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
+	}
+	if o.Command == "help" {
+		fmt.Println(cliUsage())
+		return
 	}
 	if o.Command == "daemon" {
 		if err := runDaemon(o.StateDir); err != nil {
