@@ -23,7 +23,7 @@ func controlTimeout(command string) time.Duration {
 	case "up":
 		return 10 * time.Minute
 	case "doctor":
-		return 30 * time.Second
+		return 45 * time.Second
 	default:
 		return 5 * time.Second
 	}

@@ -189,13 +189,6 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 			return fmt.Errorf("process %q exited before readiness", name)
 		case <-deadline.C():
 			cancelProbe()
-			select {
-			case err := <-probeResult:
-				if err == nil {
-					return nil
-				}
-			case <-ctx.Done():
-			}
 			return fmt.Errorf("readiness timeout for %q", name)
 		}
 	}

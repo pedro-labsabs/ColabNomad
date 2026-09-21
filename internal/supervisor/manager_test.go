@@ -290,6 +290,39 @@ func TestManagerReadinessTimeoutCancelsBlockingProbe(t *testing.T) {
 	}
 }
 
+func TestManagerReadinessTimeoutReturnsBeforeProbeAcknowledgesCancellation(t *testing.T) {
+	clock := &fakeClock{}
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	svc := &uncooperativeProbeService{name: "uncooperative", started: started, cancelled: cancelled, release: release}
+	m := NewManager([]Service{svc}, &fakeRunner{}, RestartPolicy{MaxRestarts: 0}, WithClock(clock), WithReadinessTimeout(2*time.Second))
+	result := make(chan error, 1)
+	go func() { result <- m.StartAll(context.Background()) }()
+	waitFor(t, func() bool {
+		select {
+		case <-started:
+			return true
+		default:
+			return false
+		}
+	})
+	waitFor(t, func() bool { return clock.pending() >= 1 })
+	clock.Advance(2 * time.Second)
+	select {
+	case err := <-result:
+		if err == nil || !contains(err, "readiness timeout") {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness timeout waited for an uncooperative probe")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("probe context was not cancelled")
+	}
+	close(release)
+}
+
 type blockingProbeService struct {
 	name               string
 	started, cancelled chan struct{}
@@ -306,6 +339,24 @@ func (s *blockingProbeService) Probe(ctx context.Context) error {
 	return ctx.Err()
 }
 func (s *blockingProbeService) Cleanup(context.Context) error { return nil }
+
+type uncooperativeProbeService struct {
+	name                        string
+	started, cancelled, release chan struct{}
+}
+
+func (s *uncooperativeProbeService) Name() string                  { return s.name }
+func (s *uncooperativeProbeService) Dependencies() []string        { return nil }
+func (s *uncooperativeProbeService) Prepare(context.Context) error { return nil }
+func (s *uncooperativeProbeService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s *uncooperativeProbeService) Probe(ctx context.Context) error {
+	close(s.started)
+	<-ctx.Done()
+	close(s.cancelled)
+	<-s.release
+	return ctx.Err()
+}
+func (s *uncooperativeProbeService) Cleanup(context.Context) error { return nil }
 
 func TestManagerExplicitRestartDoesNotTriggerAutomaticRestart(t *testing.T) {
 	runner := &fakeRunner{}

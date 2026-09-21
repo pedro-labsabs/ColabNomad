@@ -23,8 +23,8 @@ func TestControlTimeoutsMatchCommandWorkloads(t *testing.T) {
 	if controlTimeout("up") < 3*time.Minute {
 		t.Fatalf("up timeout too short: %s", controlTimeout("up"))
 	}
-	if controlTimeout("doctor") <= controlTimeout("status") {
-		t.Fatalf("doctor timeout must exceed status: doctor=%s status=%s", controlTimeout("doctor"), controlTimeout("status"))
+	if controlTimeout("doctor") <= 30*time.Second || controlTimeout("doctor") <= controlTimeout("status") {
+		t.Fatalf("doctor timeout lacks transport margin: doctor=%s status=%s", controlTimeout("doctor"), controlTimeout("status"))
 	}
 	for _, command := range []string{"status", "logs", "restart", "down"} {
 		if controlTimeout(command) <= 0 || controlTimeout(command) >= time.Minute {
