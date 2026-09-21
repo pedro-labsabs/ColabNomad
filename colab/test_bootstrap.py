@@ -234,6 +234,20 @@ class BootstrapTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}):
             self.assertIsNone(bootstrap._userdata_get("GITHUB_TOKEN"))
 
+    def test_userdata_timeout_is_treated_as_missing_optional_secret(self):
+        class TimeoutException(Exception):
+            pass
+
+        fake_userdata = mock.Mock()
+        fake_userdata.TimeoutException = TimeoutException
+        fake_userdata.get.side_effect = TimeoutException("OPENCODE_API_KEY")
+        google = types.ModuleType("google")
+        colab = types.ModuleType("google.colab")
+        colab.userdata = fake_userdata
+        google.colab = colab
+        with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}):
+            self.assertIsNone(bootstrap._userdata_get("OPENCODE_API_KEY"))
+
     def test_collect_colab_secrets_prefers_environment_without_userdata_lookup(self):
         with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token", "OPENCODE_API_KEY": "env-key"}, clear=False), \
              mock.patch.object(bootstrap, "_userdata_get") as get:

@@ -184,8 +184,15 @@ def _userdata_get(name):
     except (KeyError, RuntimeError, AttributeError):
         return None
     except Exception as exc:
-        secret_not_found = getattr(userdata, "SecretNotFoundError", None)
-        if secret_not_found is not None and isinstance(exc, secret_not_found):
+        optional_errors = tuple(
+            error_type
+            for error_type in (
+                getattr(userdata, "SecretNotFoundError", None),
+                getattr(userdata, "TimeoutException", None),
+            )
+            if isinstance(error_type, type) and issubclass(error_type, BaseException)
+        )
+        if optional_errors and isinstance(exc, optional_errors):
             return None
         raise
 
