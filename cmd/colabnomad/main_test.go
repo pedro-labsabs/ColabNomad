@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -191,5 +192,53 @@ func TestUpPayloadCarriesPinnedManifestPath(t *testing.T) {
 	}
 	if got.VersionsPath != "/tmp/pinned-versions.json" {
 		t.Fatalf("versions path = %q", got.VersionsPath)
+	}
+}
+
+func TestDaemonReportsCurrentBinaryIdentity(t *testing.T) {
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- runDaemon(dir) }()
+
+	socket := filepath.Join(dir, "control.sock")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon socket did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	client := control.Client{Socket: socket, Timeout: time.Second}
+	resp, err := client.Do(control.Request{Command: "identity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Binary string `json:"binary"`
+	}
+	if err := json.Unmarshal(resp.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	want, err := control.CurrentBinaryIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Binary == "" || got.Binary != want {
+		t.Fatalf("daemon identity=%q want=%q", got.Binary, want)
+	}
+	if _, err := client.Do(control.Request{Command: "down"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemon did not stop")
 	}
 }

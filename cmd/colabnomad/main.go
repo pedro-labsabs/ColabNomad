@@ -182,6 +182,15 @@ func runDaemon(stateDir string) error {
 	r.SupervisorContext = ctx
 	s, err := control.NewServer(stateDir, serializedHandler(func(req control.Request) control.Response {
 		switch req.Command {
+		case "identity":
+			binaryIdentity, err := control.CurrentBinaryIdentity()
+			if err != nil {
+				return control.Response{Error: err.Error()}
+			}
+			b, _ := json.Marshal(struct {
+				Binary string `json:"binary"`
+			}{Binary: binaryIdentity})
+			return control.Response{OK: true, Payload: b}
 		case "up":
 			var v app.UpRequest
 			if err := json.Unmarshal(req.Payload, &v); err != nil {

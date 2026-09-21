@@ -152,6 +152,8 @@ colabnomad down
 
 The runtime writes machine-readable state to an ephemeral directory such as `/content/.colabnomad`.
 
+A reachable control socket is reusable only when the daemon reports the same startup-captured binary identity as the current CLI. If the binary changed in place, the current CLI requests a normal `down`, waits for both the socket and owner identity to clear, and then starts the replacement daemon. Legacy daemons that do not implement the identity command are treated as stale; ColabNomad never signals a PID merely because it appears in saved state.
+
 State may contain service PIDs, ports, generated URLs, timestamps, resolved versions, and non-secret configuration.
 
 Secrets must remain in process environment or protected temporary files and must never appear in normal logs or status output.

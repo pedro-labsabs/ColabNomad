@@ -268,3 +268,163 @@ func TestEnsureDaemonSocketSerializesConcurrentStarts(t *testing.T) {
 		t.Fatalf("start invoked %d times", starts)
 	}
 }
+
+func TestEnsureCompatibleDaemonReusesMatchingIdentity(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, err := NewServer(dir, func(req Request) Response {
+		if req.Command == "identity" {
+			return Response{OK: true, Payload: json.RawMessage(`{"binary":"same-build"}`)}
+		}
+		return Response{Error: "unexpected command"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	go func() { _ = s.Serve(ctx) }()
+
+	starts := 0
+	if err := ensureCompatibleDaemon(dir, "same-build", func() error {
+		starts++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 0 {
+		t.Fatalf("matching daemon was replaced; starts=%d", starts)
+	}
+}
+
+func TestEnsureCompatibleDaemonReplacesMismatchedIdentityViaDown(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := NewServer(dir, func(req Request) Response {
+		switch req.Command {
+		case "identity":
+			return Response{OK: true, Payload: json.RawMessage(`{"binary":"old-build"}`)}
+		case "down":
+			cancel()
+			return Response{OK: true}
+		default:
+			return Response{Error: "unsupported"}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan struct{})
+	go func() {
+		_ = s.Serve(ctx)
+		_ = s.Close()
+		close(serveDone)
+	}()
+
+	starts := 0
+	var replacement net.Listener
+	start := func() error {
+		starts++
+		var err error
+		replacement, err = net.Listen("unix", filepath.Join(dir, "control.sock"))
+		return err
+	}
+	defer func() {
+		if replacement != nil {
+			replacement.Close()
+		}
+	}()
+
+	if err := ensureCompatibleDaemon(dir, "new-build", start); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale daemon did not shut down")
+	}
+	if starts != 1 {
+		t.Fatalf("replacement starts=%d, want 1", starts)
+	}
+}
+
+func TestEnsureCompatibleDaemonTreatsLegacyDaemonWithoutIdentityAsStale(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := NewServer(dir, func(req Request) Response {
+		switch req.Command {
+		case "down":
+			cancel()
+			return Response{OK: true}
+		default:
+			return Response{Error: "unsupported daemon command"}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = s.Serve(ctx)
+		_ = s.Close()
+	}()
+
+	starts := 0
+	if err := ensureCompatibleDaemon(dir, "new-build", func() error {
+		starts++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 {
+		t.Fatalf("legacy daemon replacement starts=%d, want 1", starts)
+	}
+}
+
+func TestCurrentBinaryIdentityIsStableAndNonEmpty(t *testing.T) {
+	first, err := CurrentBinaryIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CurrentBinaryIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("binary identity first=%q second=%q", first, second)
+	}
+}
+
+func TestEnsureCompatibleDaemonAllowsGracefulStaleShutdown(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := NewServer(dir, func(req Request) Response {
+		switch req.Command {
+		case "identity":
+			return Response{OK: true, Payload: json.RawMessage(`{"binary":"old-build"}`)}
+		case "down":
+			time.Sleep(700 * time.Millisecond)
+			cancel()
+			return Response{OK: true}
+		default:
+			return Response{Error: "unsupported"}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = s.Serve(ctx)
+		_ = s.Close()
+	}()
+
+	starts := 0
+	if err := ensureCompatibleDaemon(dir, "new-build", func() error {
+		starts++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 {
+		t.Fatalf("replacement starts=%d, want 1", starts)
+	}
+}

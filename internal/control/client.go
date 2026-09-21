@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -41,6 +42,50 @@ func (c Client) Do(req Request) (Response, error) {
 }
 
 func ensureDaemonSocket(stateDir string, _ int, start func() error) error {
+	return ensureDaemonSocketWithLiveCheck(stateDir, start, nil)
+}
+
+func ensureCompatibleDaemon(stateDir, binaryIdentity string, start func() error) error {
+	if binaryIdentity == "" {
+		return fmt.Errorf("current daemon binary identity is empty")
+	}
+	return ensureDaemonSocketWithLiveCheck(stateDir, start, func(path string) (bool, error) {
+		identityClient := Client{Socket: path, Timeout: 500 * time.Millisecond}
+		resp, err := identityClient.Do(Request{Command: "identity"})
+		if err == nil {
+			var identity struct {
+				Binary string `json:"binary"`
+			}
+			if jsonErr := json.Unmarshal(resp.Payload, &identity); jsonErr == nil && identity.Binary == binaryIdentity {
+				return true, nil
+			}
+		}
+		downClient := Client{Socket: path, Timeout: 30 * time.Second}
+		if _, downErr := downClient.Do(Request{Command: "down"}); downErr != nil {
+			return false, fmt.Errorf("stop stale daemon: %w", downErr)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			conn, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+			if dialErr == nil {
+				_ = conn.Close()
+				time.Sleep(25 * time.Millisecond)
+				continue
+			}
+			owner, ownerErr := readOwner(ownerPath(stateDir))
+			if os.IsNotExist(ownerErr) || (ownerErr == nil && !ownerAlive(owner)) {
+				return false, nil
+			}
+			if ownerErr != nil {
+				return false, fmt.Errorf("verify stale daemon owner: %w", ownerErr)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return false, fmt.Errorf("stale daemon did not stop within timeout")
+	})
+}
+
+func ensureDaemonSocketWithLiveCheck(stateDir string, start func() error, liveCheck func(string) (bool, error)) error {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return err
 	}
@@ -55,8 +100,17 @@ func ensureDaemonSocket(stateDir string, _ int, start func() error) error {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	path := stateDir + "/control.sock"
 	if c, err := net.DialTimeout("unix", path, 100*time.Millisecond); err == nil {
-		c.Close()
-		return nil
+		_ = c.Close()
+		if liveCheck == nil {
+			return nil
+		}
+		reuse, checkErr := liveCheck(path)
+		if checkErr != nil {
+			return checkErr
+		}
+		if reuse {
+			return nil
+		}
 	}
 	owner := ownerPath(stateDir)
 	hasOwner, err := verifySocketReplacement(path, owner)
@@ -80,10 +134,15 @@ func removeSocket(path string) error {
 	return nil
 }
 
-// EnsureDaemon reuses a reachable daemon and otherwise starts a detached
-// instance. It deliberately does not inspect or signal any saved PID.
+// EnsureDaemon reuses only a daemon launched by the same binary identity and
+// otherwise asks the stale daemon to shut down before starting a replacement.
+// It deliberately does not inspect or signal any saved PID.
 func EnsureDaemon(stateDir string) error {
-	return ensureDaemonSocket(stateDir, 0, func() error {
+	binaryIdentity, err := CurrentBinaryIdentity()
+	if err != nil {
+		return err
+	}
+	return ensureCompatibleDaemon(stateDir, binaryIdentity, func() error {
 		if err := os.MkdirAll(filepath.Join(stateDir, "logs"), 0700); err != nil {
 			return err
 		}
