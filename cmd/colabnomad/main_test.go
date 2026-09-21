@@ -9,6 +9,13 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/app"
 )
 
+func TestDaemonRuntimeUsesOperationalDefaults(t *testing.T) {
+	r := newDaemonRuntime("/tmp/task8-state")
+	if r.Config.StateDir != "/tmp/task8-state" || r.Config.WorkspaceRoot != "/content/workspaces" || r.Config.OpenCodePort != 4096 || r.Config.TerminalPort != 7681 || r.Config.OpenCodeTunnel != "serveo" || r.Config.TerminalTunnel != "serveo" {
+		t.Fatalf("daemon config: %#v", r.Config)
+	}
+}
+
 func TestParseCLI(t *testing.T) {
 	for _, args := range [][]string{{"status"}, {"doctor"}, {"logs", "terminal"}, {"restart", "opencode"}, {"down"}, {"up", "--repo", "https://example/repo", "--terminal-tunnel", "cloudflare"}} {
 		if _, err := parseArgs(args); err != nil {

@@ -43,6 +43,7 @@ type Composition struct {
 	Endpoints                      map[string]string
 	Manager                        *supervisor.Manager
 	TerminalTunnel, OpenCodeTunnel *tunnel.Service
+	ServiceMap                     map[string]supervisor.Service
 }
 type ComposeFunc func(context.Context, UpRequest) (*Composition, error)
 
@@ -81,6 +82,7 @@ type Runtime struct {
 	ProviderChecks   map[string]error
 	ToolPaths        map[string]string
 	RedactionSecrets []string
+	running          bool
 	downOnce         sync.Once
 	downErr          error
 }
@@ -112,6 +114,12 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if c.TerminalPort == 0 {
 		c.TerminalPort = 7681
 	}
+	if r.running {
+		if c.RepoURL != r.Config.RepoURL || c.RepoRef != r.Config.RepoRef || c.OpenCodeTunnel != r.Config.OpenCodeTunnel || c.TerminalTunnel != r.Config.TerminalTunnel || c.OpenCodePort != r.Config.OpenCodePort || c.TerminalPort != r.Config.TerminalPort {
+			return out, fmt.Errorf("runtime is already running with an incompatible configuration; down first")
+		}
+		return r.connectionSummary()
+	}
 	if c.OpenCodePort == c.TerminalPort {
 		return out, fmt.Errorf("configured service ports must be distinct")
 	}
@@ -140,15 +148,18 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if manifestPath == "" {
 		manifestPath = os.Getenv("COLABNOMAD_VERSIONS_FILE")
 	}
-	if manifestPath == "" && r.Versions.OpenCode.Version == "" && r.Compose == nil {
-		return out, fmt.Errorf("COLABNOMAD_VERSIONS_FILE is required; pinned versions manifest path is not configured")
-	}
 	if r.Versions.OpenCode.Version == "" {
-		versions, err := config.LoadVersions(manifestPath)
-		if err != nil {
-			return out, fmt.Errorf("load pinned versions manifest %q: %w", manifestPath, err)
+		if manifestPath == "" {
+			if r.Compose == nil {
+				return out, fmt.Errorf("COLABNOMAD_VERSIONS_FILE is required; pinned versions manifest path is not configured")
+			}
+		} else {
+			versions, err := config.LoadVersions(manifestPath)
+			if err != nil {
+				return out, fmt.Errorf("load pinned versions manifest %q: %w", manifestPath, err)
+			}
+			r.Versions = versions
 		}
-		r.Versions = versions
 	}
 	cred := r.Credentials
 	if cred.OpenCodeUser == "" {
@@ -194,6 +205,9 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 		r.Manager = comp.Manager
 	}
 	r.WorkspacePath = comp.WorkspacePath
+	if comp.ServiceMap != nil {
+		r.Services = comp.ServiceMap
+	}
 	if comp.TerminalTunnel != nil {
 		comp.Endpoints["terminal"] = comp.TerminalTunnel.PublicURL()
 	}
@@ -214,7 +228,13 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if err := r.Store.Save(state.RuntimeState{SchemaVersion: 1, DaemonPID: os.Getpid(), WorkspacePath: comp.WorkspacePath, Services: services, Endpoints: comp.Endpoints, UpdatedAt: time.Now().UTC()}); err != nil {
 		return out, err
 	}
-	return ConnectionSummary{OpenCodeURL: comp.Endpoints["opencode"], TerminalURL: comp.Endpoints["terminal"], OpenCodeUser: cred.OpenCodeUser, OpenCodePassword: cred.OpenCodePassword, TerminalUser: cred.TerminalUser, TerminalPassword: cred.TerminalPassword}, nil
+	r.Config = c
+	r.running = true
+	return r.connectionSummary()
+}
+
+func (r *Runtime) connectionSummary() (ConnectionSummary, error) {
+	return ConnectionSummary{OpenCodeURL: r.EndpointServices["opencode"], TerminalURL: r.EndpointServices["terminal"], OpenCodeUser: r.Credentials.OpenCodeUser, OpenCodePassword: r.Credentials.OpenCodePassword, TerminalUser: r.Credentials.TerminalUser, TerminalPassword: r.Credentials.TerminalPassword}, nil
 }
 
 func servicePort(name string, c config.RuntimeConfig) int {
@@ -302,10 +322,10 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 	services := []supervisor.Service{termService, openService, tt, to}
 	mgr := supervisor.NewManager(services, execx.OSProcessRunner{}, supervisor.RestartPolicy{})
 	r.ProviderChecks = map[string]error{"provider:opencode": tunnel.Validate(tunnel.NewServeo(ssh, ""), tunnel.Requirements{SSE: true}), "provider:terminal": tunnel.Validate(terminalTunnel, tunnel.Requirements{WebSocket: true})}
-	return &Composition{WorkspacePath: wr.Path, Services: []string{"terminal", "opencode", "tunnel:terminal", "tunnel:opencode"}, Endpoints: map[string]string{"terminal": tt.PublicURL(), "opencode": to.PublicURL()}, Manager: mgr, TerminalTunnel: tt, OpenCodeTunnel: to}, nil
+	return &Composition{WorkspacePath: wr.Path, Services: []string{"terminal", "opencode", "tunnel:terminal", "tunnel:opencode"}, Endpoints: map[string]string{"terminal": tt.PublicURL(), "opencode": to.PublicURL()}, Manager: mgr, TerminalTunnel: tt, OpenCodeTunnel: to, ServiceMap: map[string]supervisor.Service{"terminal": termService, "opencode": openService, "tunnel:terminal": tt, "tunnel:opencode": to}}, nil
 }
 
-func validatePort(port int) error {
+func preflightPortFree(port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("invalid port %d", port)
 	}
@@ -314,6 +334,15 @@ func validatePort(port int) error {
 		return fmt.Errorf("port %d already in use", port)
 	}
 	return l.Close()
+}
+func validatePort(port int) error { return preflightPortFree(port) }
+func portListening(port int) bool {
+	l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return true
+	}
+	_ = l.Close()
+	return false
 }
 func (r *Runtime) Status() state.RuntimeState {
 	store := r.Store
@@ -337,10 +366,18 @@ func (r *Runtime) Status() state.RuntimeState {
 	}
 	return v
 }
-func (r *Runtime) Doctor(context.Context) DoctorResult {
+func (r *Runtime) Doctor(ctx context.Context) DoctorResult {
 	d := DoctorResult{Healthy: true, Components: map[string]string{}}
 	for n, p := range r.Probes {
 		if p.Err != nil {
+			d.Components[n] = "unhealthy"
+			d.Healthy = false
+		} else {
+			d.Components[n] = "healthy"
+		}
+	}
+	for n, service := range r.Services {
+		if err := service.Probe(ctx); err != nil {
 			d.Components[n] = "unhealthy"
 			d.Healthy = false
 		} else {
@@ -394,23 +431,24 @@ func (r *Runtime) Doctor(context.Context) DoctorResult {
 		}
 	}
 	if r.Config.OpenCodePort != 0 {
-		if err := validatePort(r.Config.OpenCodePort); err != nil {
+		if portListening(r.Config.OpenCodePort) && componentHealthy(d, "opencode") {
+			d.Components["port:opencode"] = "healthy"
+		} else {
 			d.Components["port:opencode"] = "unhealthy"
 			d.Healthy = false
-		} else {
-			d.Components["port:opencode"] = "healthy"
 		}
 	}
 	if r.Config.TerminalPort != 0 {
-		if err := validatePort(r.Config.TerminalPort); err != nil {
+		if portListening(r.Config.TerminalPort) && componentHealthy(d, "terminal") {
+			d.Components["port:terminal"] = "healthy"
+		} else {
 			d.Components["port:terminal"] = "unhealthy"
 			d.Healthy = false
-		} else {
-			d.Components["port:terminal"] = "healthy"
 		}
 	}
 	return d
 }
+func componentHealthy(d DoctorResult, name string) bool { return d.Components[name] == "healthy" }
 func (r *Runtime) Logs(service string) string {
 	var text string
 	for _, suffix := range []string{".stdout.log", ".stderr.log"} {

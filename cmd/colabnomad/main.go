@@ -109,8 +109,14 @@ func main() {
 	}
 }
 
+func newDaemonRuntime(stateDir string) *app.Runtime {
+	c := config.Default("")
+	c.StateDir = stateDir
+	return &app.Runtime{Config: c, Probes: map[string]app.ProbeResult{}}
+}
+
 func runDaemon(stateDir string) error {
-	r := &app.Runtime{Config: config.RuntimeConfig{StateDir: stateDir}, Probes: map[string]app.ProbeResult{}}
+	r := newDaemonRuntime(stateDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s, err := control.NewServer(stateDir, func(req control.Request) control.Response {
