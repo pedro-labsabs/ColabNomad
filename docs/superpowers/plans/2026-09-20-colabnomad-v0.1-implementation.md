@@ -505,7 +505,7 @@ Serveo capabilities are `{SSE:true, WebSocket:true}` and command argv is:
 ssh -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<state>/serveo_known_hosts -R 80:127.0.0.1:<port> serveo.net
 ```
 
-Parse only `https://*.serveo.net` from provider output. Cloudflare Quick capabilities are `{SSE:false, WebSocket:true}` and command argv is:
+Parse only trusted `https://*.serveo.net` or `https://*.serveousercontent.com` URLs from provider output. The second host family was confirmed by the required live Serveo smoke during implementation. Cloudflare Quick capabilities are `{SSE:false, WebSocket:true}` and command argv is:
 
 ```text
 cloudflared tunnel --no-autoupdate --url http://127.0.0.1:<port>

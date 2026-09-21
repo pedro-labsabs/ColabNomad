@@ -69,6 +69,14 @@ closes the control daemon/socket.
   headers, and credential-bearing URLs. Never paste credentials into logs or
   issue reports.
 
+## Pre-release validation
+
+Before `v0.1.0` exists, test an exact reviewed commit by setting the notebook's
+`COLABNOMAD_REF` to that pushed commit SHA while leaving
+`COLABNOMAD_RELEASE = 'v0.1.0'`. The missing release intentionally selects the
+tested source-build fallback, so the Colab smoke exercises the candidate commit
+without creating the tag or release first.
+
 ## Acceptance evidence
 
 The deterministic repository gate and the environment-level fresh-Colab smoke

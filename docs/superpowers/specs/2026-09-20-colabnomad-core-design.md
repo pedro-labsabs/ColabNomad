@@ -41,7 +41,7 @@ v0.1 provides:
 4. target workspace cloning and Git authentication support;
 5. OpenCode installation, configuration, launch, health checking, and restart;
 6. a web terminal backed by `ttyd` and `tmux`;
-7. Cloudflare Quick Tunnel exposure;
+7. capability-aware public tunnel exposure, using Serveo/OpenSSH by default and Cloudflare Quick Tunnel only where its declared capabilities are compatible;
 8. process supervision with bounded restart/backoff;
 9. `status`, `doctor`, `logs`, and `restart` commands;
 10. structured runtime state and logs under an ephemeral Colab state directory.

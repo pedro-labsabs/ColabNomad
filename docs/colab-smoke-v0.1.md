@@ -4,6 +4,23 @@ This checklist is for a real, fresh CPU Colab runtime. It is intentionally
 unchecked until concrete external evidence is recorded. The deterministic
 repository gate does not substitute for this environment-level test.
 
+## Pre-release candidate procedure
+
+Run the first fresh-Colab acceptance test against an exact pushed candidate
+commit, before creating the `v0.1.0` tag or GitHub release:
+
+1. push the reviewed candidate commit to the ColabNomad repository without
+   creating a tag or release;
+2. set `COLABNOMAD_REF` in the notebook to that exact commit SHA;
+3. leave `COLABNOMAD_RELEASE = 'v0.1.0'`;
+4. run the notebook normally.
+
+Because `v0.1.0` does not exist yet, the release download returns 404 and the
+bootstrap's tested fallback builds the already checked-out candidate source
+using the pinned Go toolchain. This proves the exact candidate without
+prematurely publishing the release. Only after every checklist row passes may
+the same reviewed commit be tagged as `v0.1.0`, subject to explicit approval.
+
 ## Run context
 
 - Date/time (UTC): ____________________
