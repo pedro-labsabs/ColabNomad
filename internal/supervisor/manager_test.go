@@ -13,17 +13,35 @@ import (
 )
 
 type testService struct {
-	name     string
-	deps     []string
-	log      *[]string
-	mu       *sync.Mutex
-	spec     execx.ManagedSpec
-	probeErr error
+	name           string
+	deps           []string
+	log            *[]string
+	mu             *sync.Mutex
+	spec           execx.ManagedSpec
+	probeErr       error
+	prepareCount   int
+	prepareEntered chan struct{}
+	prepareRelease <-chan struct{}
+	prepareDone    chan struct{}
 }
 
-func (s *testService) Name() string                  { return s.name }
-func (s *testService) Dependencies() []string        { return s.deps }
-func (s *testService) Prepare(context.Context) error { s.add("prepare:" + s.name); return nil }
+func (s *testService) Name() string           { return s.name }
+func (s *testService) Dependencies() []string { return s.deps }
+func (s *testService) Prepare(context.Context) error {
+	s.mu.Lock()
+	s.prepareCount++
+	count := s.prepareCount
+	*s.log = append(*s.log, "prepare:"+s.name)
+	s.mu.Unlock()
+	if count == 2 && s.prepareEntered != nil {
+		close(s.prepareEntered)
+		<-s.prepareRelease
+		if s.prepareDone != nil {
+			close(s.prepareDone)
+		}
+	}
+	return nil
+}
 func (s *testService) Command() execx.ManagedSpec    { return s.spec }
 func (s *testService) Probe(context.Context) error   { s.add("probe:" + s.name); return s.probeErr }
 func (s *testService) Cleanup(context.Context) error { s.add("cleanup:" + s.name); return nil }
@@ -46,12 +64,13 @@ func (h *fakeHandle) Stop(time.Duration) error {
 }
 
 type fakeRunner struct {
-	mu        sync.Mutex
-	starts    []string
-	handles   []*fakeHandle
-	nextErr   error
-	startErrs []error
-	exit      bool
+	mu         sync.Mutex
+	starts     []string
+	handles    []*fakeHandle
+	nextErr    error
+	startErrs  []error
+	exit       bool
+	thirdStart chan struct{}
 }
 
 type fakeTimer struct {
@@ -126,6 +145,9 @@ func (r *fakeRunner) Start(s execx.ManagedSpec) (execx.ProcessHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, s.Path)
+	if len(r.starts) == 3 && r.thirdStart != nil {
+		close(r.thirdStart)
+	}
 	if len(r.startErrs) > 0 {
 		err := r.startErrs[0]
 		r.startErrs = r.startErrs[1:]
@@ -245,6 +267,56 @@ func TestManagerUsesRemainingRestartBudgetAfterFailedRetry(t *testing.T) {
 	}
 	if m.generation["svc"] != initialGeneration {
 		t.Fatalf("generation = %d, want %d", m.generation["svc"], initialGeneration)
+	}
+}
+
+func TestManagerManualRestartCannotRaceAutomaticRecovery(t *testing.T) {
+	prepareEntered := make(chan struct{})
+	prepareRelease := make(chan struct{})
+	prepareDone := make(chan struct{})
+	runner := &fakeRunner{thirdStart: make(chan struct{})}
+	svc := &testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}, prepareEntered: prepareEntered, prepareRelease: prepareRelease, prepareDone: prepareDone}
+	clock := &fakeClock{}
+	m := NewManager([]Service{svc}, runner, RestartPolicy{MaxRestarts: 1, InitialBackoff: time.Second}, WithClock(clock))
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(time.Second)
+	select {
+	case <-prepareEntered:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not reach the barrier")
+	}
+
+	restartDone := make(chan error, 1)
+	go func() { restartDone <- m.Restart(context.Background(), "svc") }()
+	waitFor(t, func() bool { return runner.count() == 2 })
+	close(prepareRelease)
+	select {
+	case err := <-restartDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual restart did not complete")
+	}
+	select {
+	case <-prepareDone:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not leave the barrier")
+	}
+	select {
+	case <-runner.thirdStart:
+		t.Fatal("stale automatic recovery launched a second replacement")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if runner.count() != 2 {
+		t.Fatalf("starts = %d, want exactly 2", runner.count())
+	}
+	if m.ServicePID("svc") != 2 {
+		t.Fatalf("service PID = %d, want 2", m.ServicePID("svc"))
 	}
 }
 

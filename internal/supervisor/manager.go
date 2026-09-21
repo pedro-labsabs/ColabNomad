@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ type Manager struct {
 	runner           execx.ProcessRunner
 	policy           RestartPolicy
 	mu               sync.RWMutex
+	lifecycleMu      sync.Mutex
 	state            map[string]State
 	handles          map[string]execx.ProcessHandle
 	generation       map[string]uint64
@@ -127,10 +129,12 @@ func (m *Manager) StartAllWithLifetime(startupCtx, lifetimeCtx context.Context) 
 }
 
 func (m *Manager) startReady(ctx context.Context, name string) error {
-	return m.startReadyMode(ctx, name, true)
+	return m.startReadyMode(ctx, name, true, nil)
 }
 
-func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool) error {
+var errStaleGeneration = errors.New("stale service generation")
+
+func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool, expectedGeneration *uint64) error {
 	service := m.services[name]
 	for _, dep := range service.Dependencies() {
 		select {
@@ -144,6 +148,13 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool)
 	}
 	if err := service.Prepare(ctx); err != nil {
 		return fmt.Errorf("prepare %q: %w", name, err)
+	}
+	if expectedGeneration != nil {
+		m.lifecycleMu.Lock()
+		defer m.lifecycleMu.Unlock()
+		if !m.isGenerationCurrent(name, *expectedGeneration) {
+			return errStaleGeneration
+		}
 	}
 	m.setState(name, Starting)
 	h, err := m.runner.Start(service.Command())
@@ -246,7 +257,10 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 		if !m.isGenerationCurrent(name, generation) {
 			return
 		}
-		if err := m.startReadyMode(ctx, name, false); err != nil {
+		if err := m.startReadyMode(ctx, name, false, &generation); err != nil {
+			if errors.Is(err, errStaleGeneration) {
+				return
+			}
 			continue
 		}
 		m.mu.RLock()
@@ -262,6 +276,8 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("unknown service %q", name)
 	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	h := m.handles[name]
 	// Invalidate the monitored generation before stopping it. Otherwise its
@@ -282,6 +298,8 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 }
 
 func (m *Manager) StopAll(ctx context.Context) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	if len(m.order) == 0 {
 		var err error
 		m.order, err = m.topologicalOrder()
