@@ -136,6 +136,13 @@ var errStaleGeneration = errors.New("stale service generation")
 
 func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool, expectedGeneration *uint64) error {
 	service := m.services[name]
+	if expectedGeneration != nil {
+		m.lifecycleMu.Lock()
+		defer m.lifecycleMu.Unlock()
+		if !m.isGenerationCurrent(name, *expectedGeneration) {
+			return errStaleGeneration
+		}
+	}
 	for _, dep := range service.Dependencies() {
 		select {
 		case <-ctx.Done():
@@ -148,13 +155,6 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool,
 	}
 	if err := service.Prepare(ctx); err != nil {
 		return fmt.Errorf("prepare %q: %w", name, err)
-	}
-	if expectedGeneration != nil {
-		m.lifecycleMu.Lock()
-		defer m.lifecycleMu.Unlock()
-		if !m.isGenerationCurrent(name, *expectedGeneration) {
-			return errStaleGeneration
-		}
 	}
 	m.setState(name, Starting)
 	h, err := m.runner.Start(service.Command())

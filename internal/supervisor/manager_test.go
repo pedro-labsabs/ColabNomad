@@ -308,31 +308,55 @@ func TestManagerManualRestartCannotRaceAutomaticRecovery(t *testing.T) {
 
 	restartDone := make(chan error, 1)
 	go func() { restartDone <- m.Restart(context.Background(), "svc") }()
-	waitFor(t, func() bool { return runner.count() == 2 })
-	close(prepareRelease)
 	select {
 	case err := <-restartDone:
+		close(prepareRelease)
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("manual restart did not complete")
+		t.Fatal("manual restart completed while automatic recovery Prepare was still blocked")
+	case <-time.After(50 * time.Millisecond):
 	}
+	if runner.count() != 1 {
+		close(prepareRelease)
+		t.Fatalf("starts = %d while automatic Prepare is blocked, want 1", runner.count())
+	}
+
+	close(prepareRelease)
 	select {
 	case <-prepareDone:
 	case <-time.After(time.Second):
 		t.Fatal("automatic recovery did not leave the barrier")
 	}
 	select {
-	case <-runner.thirdStart:
-		t.Fatal("stale automatic recovery launched a second replacement")
-	case <-time.After(50 * time.Millisecond):
+	case err := <-restartDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual restart did not complete after automatic recovery released lifecycle ownership")
 	}
-	if runner.count() != 2 {
-		t.Fatalf("starts = %d, want exactly 2", runner.count())
+	waitFor(t, func() bool { return runner.count() == 3 })
+	if m.ServicePID("svc") != 3 {
+		t.Fatalf("service PID = %d, want 3", m.ServicePID("svc"))
 	}
-	if m.ServicePID("svc") != 2 {
-		t.Fatalf("service PID = %d, want 2", m.ServicePID("svc"))
+	runner.mu.Lock()
+	if len(runner.handles) != 3 {
+		runner.mu.Unlock()
+		t.Fatalf("handles = %d, want 3", len(runner.handles))
+	}
+	autoReplacement := runner.handles[1]
+	manualReplacement := runner.handles[2]
+	runner.mu.Unlock()
+	select {
+	case <-autoReplacement.Done():
+	default:
+		t.Fatal("automatic replacement was not stopped by the manual restart")
+	}
+	select {
+	case <-manualReplacement.Done():
+		t.Fatal("manual replacement is not the live current process")
+	default:
 	}
 }
 
