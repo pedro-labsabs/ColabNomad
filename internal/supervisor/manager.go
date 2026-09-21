@@ -189,6 +189,13 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool,
 func (m *Manager) waitReady(ctx context.Context, name string, service Service, h execx.ProcessHandle) error {
 	deadline := m.clock.NewTimer(m.readinessTimeout)
 	defer deadline.Stop()
+	var lastProbeErr error
+	readinessTimeoutErr := func() error {
+		if lastProbeErr != nil {
+			return fmt.Errorf("readiness timeout for %q; last probe error: %w", name, lastProbeErr)
+		}
+		return fmt.Errorf("readiness timeout for %q", name)
+	}
 	for {
 		probeCtx, cancelProbe := context.WithCancel(ctx)
 		probeResult := make(chan error, 1)
@@ -199,6 +206,7 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 			if err == nil {
 				return nil
 			}
+			lastProbeErr = err
 			interval := m.clock.NewTimer(m.probeInterval)
 			select {
 			case <-interval.C():
@@ -210,7 +218,7 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 				return fmt.Errorf("process %q exited before readiness", name)
 			case <-deadline.C():
 				interval.Stop()
-				return fmt.Errorf("readiness timeout for %q", name)
+				return readinessTimeoutErr()
 			}
 		case <-ctx.Done():
 			cancelProbe()
@@ -220,7 +228,7 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 			return fmt.Errorf("process %q exited before readiness", name)
 		case <-deadline.C():
 			cancelProbe()
-			return fmt.Errorf("readiness timeout for %q", name)
+			return readinessTimeoutErr()
 		}
 	}
 }

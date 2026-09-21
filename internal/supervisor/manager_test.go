@@ -642,3 +642,32 @@ func stringContains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestManagerReadinessTimeoutIncludesLastProbeError(t *testing.T) {
+	clock := &fakeClock{}
+	var log []string
+	var mu sync.Mutex
+	svc := &testService{name: "tunnel:terminal", probeErr: fmt.Errorf("unexpected HTTP status 530"), log: &log, mu: &mu}
+	m := NewManager([]Service{svc}, &fakeRunner{}, RestartPolicy{MaxRestarts: 0}, WithClock(clock), WithReadinessTimeout(2*time.Second), WithProbeInterval(time.Second))
+	result := make(chan error, 1)
+	go func() { result <- m.StartAll(context.Background()) }()
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(log) > 0
+	})
+	// The second pending timer is the retry interval, which is created only
+	// after waitReady has consumed and stored the first probe error.
+	waitFor(t, func() bool { return clock.pending() >= 2 })
+	clock.Advance(2 * time.Second)
+
+	select {
+	case err := <-result:
+		if err == nil || !contains(err, `readiness timeout for "tunnel:terminal"`) || !contains(err, "unexpected HTTP status 530") {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness did not time out")
+	}
+}
