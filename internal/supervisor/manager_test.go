@@ -360,6 +360,68 @@ func TestManagerManualRestartCannotRaceAutomaticRecovery(t *testing.T) {
 	}
 }
 
+func TestManagerCurrentHandleForGenerationRejectsMissingAndStaleState(t *testing.T) {
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, &fakeRunner{}, RestartPolicy{})
+	h := &fakeHandle{done: make(chan error), pid: 42}
+	m.mu.Lock()
+	m.handles["svc"] = h
+	m.state["svc"] = Healthy
+	m.generation["svc"] = 7
+	m.mu.Unlock()
+
+	got, ok := m.currentHandleForGeneration("svc", 7)
+	if !ok || got != h {
+		t.Fatalf("current handle = %#v, %v; want original handle, true", got, ok)
+	}
+
+	m.mu.Lock()
+	delete(m.handles, "svc")
+	m.mu.Unlock()
+	if got, ok := m.currentHandleForGeneration("svc", 7); ok || got != nil {
+		t.Fatalf("missing handle = %#v, %v; want nil, false", got, ok)
+	}
+
+	m.mu.Lock()
+	m.handles["svc"] = h
+	m.generation["svc"] = 8
+	m.state["svc"] = Healthy
+	m.mu.Unlock()
+	if _, ok := m.currentHandleForGeneration("svc", 7); ok {
+		t.Fatal("stale generation returned a current handle")
+	}
+
+	m.mu.Lock()
+	m.generation["svc"] = 7
+	m.state["svc"] = Unhealthy
+	m.mu.Unlock()
+	if _, ok := m.currentHandleForGeneration("svc", 7); ok {
+		t.Fatal("unhealthy service returned a current handle")
+	}
+}
+
+func TestManagerCancelledStaleMonitorDoesNotOverwriteStoppedState(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &fakeRunner{}
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3, InitialBackoff: time.Second}, WithClock(clock))
+	if err := m.StartAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	if err := m.StopAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.State("svc"); got != Stopped {
+		t.Fatalf("state after StopAll = %s, want stopped", got)
+	}
+	cancel()
+	waitFor(t, func() bool { return clock.pending() == 0 })
+	if got := m.State("svc"); got != Stopped {
+		t.Fatalf("stale monitor overwrote stopped state with %s", got)
+	}
+}
+
 func TestManagerRejectsDependencyCycle(t *testing.T) {
 	a := &testService{name: "a", deps: []string{"b"}, log: &[]string{}, mu: &sync.Mutex{}}
 	b := &testService{name: "b", deps: []string{"a"}, log: &[]string{}, mu: &sync.Mutex{}}

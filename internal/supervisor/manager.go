@@ -250,7 +250,7 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			m.setState(name, Unhealthy)
+			m.setStateIfGenerationCurrent(name, generation, Unhealthy)
 			return
 		case <-timer.C():
 		}
@@ -263,9 +263,10 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 			}
 			continue
 		}
-		m.mu.RLock()
-		next := m.handles[name]
-		m.mu.RUnlock()
+		next, ok := m.currentHandleForGeneration(name, generation)
+		if !ok {
+			return
+		}
 		<-next.Done()
 		m.mu.Lock()
 		stillCurrent := m.generation[name] == generation && m.handles[name] == next && m.state[name] == Healthy
@@ -278,7 +279,7 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 			return
 		}
 	}
-	m.setState(name, Unhealthy)
+	m.setStateIfGenerationCurrent(name, generation, Unhealthy)
 }
 
 func (m *Manager) Restart(ctx context.Context, name string) error {
@@ -342,6 +343,23 @@ func (m *Manager) setState(name string, state State) {
 	m.mu.Lock()
 	m.state[name] = state
 	m.mu.Unlock()
+}
+
+func (m *Manager) currentHandleForGeneration(name string, generation uint64) (execx.ProcessHandle, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	h := m.handles[name]
+	return h, h != nil && m.generation[name] == generation && m.state[name] == Healthy
+}
+
+func (m *Manager) setStateIfGenerationCurrent(name string, generation uint64, state State) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.generation[name] != generation {
+		return false
+	}
+	m.state[name] = state
+	return true
 }
 
 func (m *Manager) isGenerationCurrent(name string, generation uint64) bool {
