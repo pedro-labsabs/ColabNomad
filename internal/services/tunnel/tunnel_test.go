@@ -53,9 +53,39 @@ func TestCloudflareQuickRejectedForOpenCode(t *testing.T) {
 	}
 }
 
+func TestLocalhostRunSatisfiesBrowserTransportRequirements(t *testing.T) {
+	provider := NewLocalhostRun("/usr/bin/ssh", "/state/known_hosts")
+	if err := Validate(provider, Requirements{SSE: true, WebSocket: true}); err != nil {
+		t.Fatal(err)
+	}
+	command := provider.Command(4097, "/state")
+	if command.Path != "/usr/bin/ssh" || !strings.Contains(strings.Join(command.Args, " "), "-R 80:127.0.0.1:4097 nokey@localhost.run") {
+		t.Fatalf("unexpected localhost.run command: %#v", command)
+	}
+	if got, err := provider.DiscoverURL("noise https://abc123.lhr.life\r\n"); err != nil || got != "https://abc123.lhr.life" {
+		t.Fatalf("localhost.run URL = %q, %v", got, err)
+	}
+	for _, raw := range []string{"https://lhr.life", "https://abc.lhr.life.evil", "https://user:pass@abc.lhr.life", "https://evil.example"} {
+		if _, err := provider.DiscoverURL(raw); err == nil {
+			t.Fatalf("accepted untrusted localhost.run URL %q", raw)
+		}
+	}
+}
+
 func TestServeoSatisfiesOpenCodeRequirements(t *testing.T) {
 	if err := Validate(NewServeo("/usr/bin/ssh", "/state/known_hosts"), Requirements{SSE: true}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTunnelServiceCanKeepPublicLabelWhileDependingOnGateway(t *testing.T) {
+	s := NewService(NewLocalhostRun("ssh", ""), namedLocalService{name: "opencode-gateway"}, "/state", 4097)
+	s.Label = "opencode"
+	if s.Name() != "tunnel:opencode" {
+		t.Fatalf("name = %q", s.Name())
+	}
+	if !reflect.DeepEqual(s.Dependencies(), []string{"opencode-gateway"}) {
+		t.Fatalf("dependencies = %#v", s.Dependencies())
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/health"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/secure"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/browserauth"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/opencode"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/terminal"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/tunnel"
@@ -50,6 +51,49 @@ type ComposeFunc func(context.Context, UpRequest) (*Composition, error)
 
 func applyTunnelAuth(service *tunnel.Service, username, password string) {
 	service.Auth = &health.BasicAuth{Username: username, Password: password}
+}
+
+func selectOpenCodeTunnel(name config.TunnelProviderName, ssh string) (tunnel.Provider, error) {
+	switch name {
+	case config.TunnelLocalhostRun:
+		return tunnel.NewLocalhostRun(ssh, ""), nil
+	case config.TunnelServeo:
+		return tunnel.NewServeo(ssh, ""), nil
+	default:
+		return nil, fmt.Errorf("opencode tunnel provider %q lacks SSE capability", name)
+	}
+}
+
+func selectTerminalTunnel(name config.TunnelProviderName, ssh, cloudflared string) (tunnel.Provider, error) {
+	switch name {
+	case config.TunnelCloudflare:
+		return tunnel.NewCloudflare(cloudflared), nil
+	case config.TunnelServeo:
+		return tunnel.NewServeo(ssh, ""), nil
+	default:
+		return nil, fmt.Errorf("unknown terminal tunnel provider %q", name)
+	}
+}
+
+func newOpenCodeGatewayService(binary string, c config.RuntimeConfig, cred state.Credentials, sessionToken string) browserauth.Service {
+	return browserauth.Service{
+		Binary: binary, BackendPort: c.OpenCodePort, ListenPort: c.OpenCodeGatewayPort,
+		Username: cred.OpenCodeUser, Password: cred.OpenCodePassword, SessionToken: sessionToken, Prober: health.Prober{},
+	}
+}
+
+func newTunnelServices(c config.RuntimeConfig, stateDir string, openProvider, terminalProvider tunnel.Provider, gateway, terminalLocal supervisor.Service, cred state.Credentials) (*tunnel.Service, *tunnel.Service) {
+	to := tunnel.NewService(openProvider, gateway, stateDir, c.OpenCodeGatewayPort)
+	to.Label = "opencode"
+	to.Requirements = tunnel.Requirements{SSE: true}
+	to.FirstFrame = 10 * time.Second
+	applyTunnelAuth(to, cred.OpenCodeUser, cred.OpenCodePassword)
+
+	tt := tunnel.NewService(terminalProvider, terminalLocal, stateDir, c.TerminalPort)
+	tt.Requirements = tunnel.Requirements{WebSocket: true}
+	tt.FirstFrame = 10 * time.Second
+	applyTunnelAuth(tt, cred.TerminalUser, cred.TerminalPassword)
+	return to, tt
 }
 
 type loggedService struct {
@@ -109,33 +153,39 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 		c.TerminalTunnel = req.TerminalTunnel
 	}
 	if c.OpenCodeTunnel == "" {
-		c.OpenCodeTunnel = config.TunnelServeo
+		c.OpenCodeTunnel = config.TunnelLocalhostRun
 	}
 	if c.TerminalTunnel == "" {
-		c.TerminalTunnel = config.TunnelServeo
+		c.TerminalTunnel = config.TunnelCloudflare
 	}
 	if c.OpenCodePort == 0 {
 		c.OpenCodePort = 4096
+	}
+	if c.OpenCodeGatewayPort == 0 {
+		c.OpenCodeGatewayPort = 4097
 	}
 	if c.TerminalPort == 0 {
 		c.TerminalPort = 7681
 	}
 	if r.running {
-		if c.RepoURL != r.Config.RepoURL || c.RepoRef != r.Config.RepoRef || c.OpenCodeTunnel != r.Config.OpenCodeTunnel || c.TerminalTunnel != r.Config.TerminalTunnel || c.OpenCodePort != r.Config.OpenCodePort || c.TerminalPort != r.Config.TerminalPort {
+		if c.RepoURL != r.Config.RepoURL || c.RepoRef != r.Config.RepoRef || c.OpenCodeTunnel != r.Config.OpenCodeTunnel || c.TerminalTunnel != r.Config.TerminalTunnel || c.OpenCodePort != r.Config.OpenCodePort || c.OpenCodeGatewayPort != r.Config.OpenCodeGatewayPort || c.TerminalPort != r.Config.TerminalPort {
 			return out, fmt.Errorf("runtime is already running with an incompatible configuration; down first")
 		}
 		return r.connectionSummary()
 	}
-	if c.OpenCodePort == c.TerminalPort {
+	if c.OpenCodePort == c.TerminalPort || c.OpenCodePort == c.OpenCodeGatewayPort || c.OpenCodeGatewayPort == c.TerminalPort {
 		return out, fmt.Errorf("configured service ports must be distinct")
 	}
-	if c.OpenCodeTunnel != config.TunnelServeo {
+	if c.OpenCodeTunnel != config.TunnelServeo && c.OpenCodeTunnel != config.TunnelLocalhostRun {
 		return out, fmt.Errorf("opencode tunnel provider %q lacks SSE capability", c.OpenCodeTunnel)
 	}
 	if c.TerminalTunnel != config.TunnelServeo && c.TerminalTunnel != config.TunnelCloudflare {
 		return out, fmt.Errorf("unknown terminal tunnel provider %q", c.TerminalTunnel)
 	}
 	if err := validatePort(c.OpenCodePort); err != nil {
+		return out, err
+	}
+	if err := validatePort(c.OpenCodeGatewayPort); err != nil {
 		return out, err
 	}
 	if err := validatePort(c.TerminalPort); err != nil {
@@ -254,6 +304,9 @@ func (r *Runtime) connectionSummary() (ConnectionSummary, error) {
 }
 
 func servicePort(name string, c config.RuntimeConfig) int {
+	if name == "opencode-gateway" || name == "tunnel:opencode" {
+		return c.OpenCodeGatewayPort
+	}
 	if strings.Contains(name, "opencode") {
 		return c.OpenCodePort
 	}
@@ -328,39 +381,67 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 	if err != nil {
 		return nil, err
 	}
-	var terminalTunnel tunnel.Provider = tunnel.NewServeo(ssh, "")
+	cloudflared := ""
 	if c.TerminalTunnel == config.TunnelCloudflare {
-		cloud := filepath.Join(binDir, "cloudflared")
-		if err := ensure(r.Versions.Cloudflared, cloud); err != nil {
+		cloudflared = filepath.Join(binDir, "cloudflared")
+		if err := ensure(r.Versions.Cloudflared, cloudflared); err != nil {
 			return nil, fmt.Errorf("install cloudflared: %w", err)
 		}
-		terminalTunnel = tunnel.NewCloudflare(cloud)
 	}
+	openTunnel, err := selectOpenCodeTunnel(c.OpenCodeTunnel, ssh)
+	if err != nil {
+		return nil, err
+	}
+	terminalTunnel, err := selectTerminalTunnel(c.TerminalTunnel, ssh, cloudflared)
+	if err != nil {
+		return nil, err
+	}
+	selfBinary, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve colabnomad executable: %w", err)
+	}
+	sessionToken, err := secure.RandomPassword(32)
+	if err != nil {
+		return nil, fmt.Errorf("generate browser session token: %w", err)
+	}
+	r.RedactionSecrets = append(r.RedactionSecrets, sessionToken)
+
 	open := opencode.New(opencode.Config{Binary: opencodeBin, Workspace: wr.Path, StateDir: c.StateDir, Version: r.Versions.OpenCode.Version, APIKey: req.OpenCodeAPIKey, Username: r.Credentials.OpenCodeUser, Password: r.Credentials.OpenCodePassword, Port: c.OpenCodePort}, health.Prober{})
+	gateway := newOpenCodeGatewayService(selfBinary, c, r.Credentials, sessionToken)
 	term := &terminal.Service{Runner: execx.OSRunner{}, System: sys, Workspace: wr.Path, Username: r.Credentials.TerminalUser, Password: r.Credentials.TerminalPassword, Binary: ttydBin, Port: c.TerminalPort, Prober: health.Prober{}}
 	r.Terminal = term
 	r.ToolPaths = map[string]string{"tool:opencode": opencodeBin, "tool:ttyd": ttydBin, "tool:ssh": ssh}
-	if c.TerminalTunnel == config.TunnelCloudflare {
-		r.ToolPaths["tool:cloudflared"] = filepath.Join(binDir, "cloudflared")
+	if cloudflared != "" {
+		r.ToolPaths["tool:cloudflared"] = cloudflared
 	}
-	to := tunnel.NewService(tunnel.NewServeo(ssh, ""), open, c.StateDir, c.OpenCodePort)
-	to.Requirements = tunnel.Requirements{SSE: true}
-	to.FirstFrame = 10 * time.Second
-	tt := tunnel.NewService(terminalTunnel, term, c.StateDir, c.TerminalPort)
-	applyTunnelAuth(to, r.Credentials.OpenCodeUser, r.Credentials.OpenCodePassword)
-	applyTunnelAuth(tt, r.Credentials.TerminalUser, r.Credentials.TerminalPassword)
-	tt.Requirements = tunnel.Requirements{WebSocket: true}
-	tt.FirstFrame = 10 * time.Second
+
 	termLogged := loggedService{Service: term, dir: c.StateDir}
 	openLogged := loggedService{Service: open, dir: c.StateDir}
-	tt.Local = termLogged
-	to.Local = openLogged
+	gatewayLogged := loggedService{Service: gateway, dir: c.StateDir}
+
+	to, tt := newTunnelServices(c, c.StateDir, openTunnel, terminalTunnel, gatewayLogged, termLogged, r.Credentials)
+
 	termService := supervisor.Service(termLogged)
 	openService := supervisor.Service(openLogged)
-	services := []supervisor.Service{termService, openService, tt, to}
+	gatewayService := supervisor.Service(gatewayLogged)
+	services := []supervisor.Service{termService, openService, gatewayService, tt, to}
 	mgr := supervisor.NewManager(services, execx.OSProcessRunner{}, supervisor.RestartPolicy{})
-	r.ProviderChecks = map[string]error{"provider:opencode": tunnel.Validate(tunnel.NewServeo(ssh, ""), tunnel.Requirements{SSE: true}), "provider:terminal": tunnel.Validate(terminalTunnel, tunnel.Requirements{WebSocket: true})}
-	return &Composition{WorkspacePath: wr.Path, Services: []string{"terminal", "opencode", "tunnel:terminal", "tunnel:opencode"}, Endpoints: map[string]string{"terminal": tt.PublicURL(), "opencode": to.PublicURL()}, Manager: mgr, TerminalTunnel: tt, OpenCodeTunnel: to, ServiceMap: map[string]supervisor.Service{"terminal": termService, "opencode": openService, "tunnel:terminal": tt, "tunnel:opencode": to}}, nil
+	r.ProviderChecks = map[string]error{
+		"provider:opencode": tunnel.Validate(openTunnel, tunnel.Requirements{SSE: true}),
+		"provider:terminal": tunnel.Validate(terminalTunnel, tunnel.Requirements{WebSocket: true}),
+	}
+	return &Composition{
+		WorkspacePath:  wr.Path,
+		Services:       []string{"terminal", "opencode", "opencode-gateway", "tunnel:terminal", "tunnel:opencode"},
+		Endpoints:      map[string]string{"terminal": tt.PublicURL(), "opencode": to.PublicURL()},
+		Manager:        mgr,
+		TerminalTunnel: tt,
+		OpenCodeTunnel: to,
+		ServiceMap: map[string]supervisor.Service{
+			"terminal": termService, "opencode": openService, "opencode-gateway": gatewayService,
+			"tunnel:terminal": tt, "tunnel:opencode": to,
+		},
+	}, nil
 }
 
 func preflightPortFree(port int) error {

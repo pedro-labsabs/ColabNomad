@@ -2,12 +2,12 @@ package config
 
 import "testing"
 
-func TestDefaultConfigUsesServeoAndLocalhost(t *testing.T) {
+func TestDefaultConfigUsesBrowserCompatibleTunnels(t *testing.T) {
 	got := Default("https://github.com/example/project.git")
-	if got.OpenCodeTunnel != TunnelServeo || got.TerminalTunnel != TunnelServeo {
+	if got.OpenCodeTunnel != TunnelLocalhostRun || got.TerminalTunnel != TunnelCloudflare {
 		t.Fatal(got)
 	}
-	if got.OpenCodePort != 4096 || got.TerminalPort != 7681 {
+	if got.OpenCodePort != 4096 || got.OpenCodeGatewayPort != 4097 || got.TerminalPort != 7681 {
 		t.Fatal(got)
 	}
 	if got.StateDir != "/content/.colabnomad" || got.WorkspaceRoot != "/content/workspaces" {

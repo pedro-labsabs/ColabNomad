@@ -41,7 +41,7 @@ v0.1 provides:
 4. target workspace cloning and Git authentication support;
 5. OpenCode installation, configuration, launch, health checking, and restart;
 6. a web terminal backed by `ttyd` and `tmux`;
-7. capability-aware public tunnel exposure, using Serveo/OpenSSH by default and Cloudflare Quick Tunnel only where its declared capabilities are compatible;
+7. capability-aware public tunnel exposure, using localhost.run/OpenSSH for OpenCode and Cloudflare Quick Tunnel for ttyd by default;
 8. process supervision with bounded restart/backoff;
 9. `status`, `doctor`, `logs`, and `restart` commands;
 10. structured runtime state and logs under an ephemeral Colab state directory.
@@ -198,7 +198,7 @@ ColabNomad must pin or validate the OpenCode major/version expected by its adapt
 
 The adapter creates ephemeral OpenCode configuration outside the target repository unless the user explicitly requests project-local configuration. It uses an explicit `OPENCODE_CONFIG` path under ColabNomad ephemeral state and disables OpenCode auto-update so the pinned binary cannot silently change itself.
 
-The public OpenCode endpoint requires authentication. For the pinned v2 contract, the server uses Basic Auth and local readiness is proven with an authenticated JSON API request scoped to the target workspace, not by TCP-open checks or legacy v1 routes.
+The public OpenCode endpoint requires authentication. For the pinned v2 contract, OpenCode itself still uses Basic Auth locally and readiness is proven with an authenticated JSON API request scoped to the target workspace, not by TCP-open checks or legacy v1 routes. Public browser access does not expose that Basic Auth challenge directly: a localhost-only ColabNomad browser-auth gateway validates the generated OpenCode credentials, issues a `Secure`, `HttpOnly`, `SameSite=Lax` session cookie, and proxies authenticated requests to OpenCode with the local Basic Auth header. This avoids repeated browser auth prompts on OpenCode's credential-sensitive static assets while keeping OpenCode bound to localhost.
 
 Public streaming compatibility is proven against the v2 SSE endpoint `/api/event`; the first `server.connected` event or another valid SSE frame must arrive before the endpoint is considered ready.
 
@@ -220,16 +220,17 @@ The terminal endpoint requires authentication generated or supplied at startup.
 
 Tunnel transport is capability-driven. A provider declares at minimum whether it supports HTTP streaming/SSE and WebSocket traffic before it can be assigned to a managed service.
 
-v0.1 ships two providers:
+v0.1 ships three providers:
 
-- **Serveo/OpenSSH:** zero-config default for OpenCode and the terminal; it is invoked through the system `ssh` client and must pass a real SSE smoke test before it is accepted for OpenCode.
-- **Cloudflare Quick Tunnel:** supported for services that do not require SSE, including the ttyd terminal; it must never be selected for OpenCode while Quick Tunnel lacks SSE support.
+- **localhost.run/OpenSSH:** zero-config default for OpenCode. It is invoked through the system `ssh` client, supports the required SSE transport, and must pass a real SSE smoke test before release.
+- **Cloudflare Quick Tunnel:** default for ttyd, where its WebSocket support is required. It remains rejected for OpenCode because the provider contract does not declare SSE.
+- **Serveo/OpenSSH:** retained as an explicit legacy provider, but not selected by default for browser UIs because its free browser-warning interstitial is request-scoped and breaks multi-request UI flows.
 
 The tunnel interface owns process startup, public URL discovery, readiness, capability reporting, and lifecycle observation. Tunnel loss must not terminate the underlying OpenCode or tmux sessions.
 
 Provider selection must fail closed: if a service requires a transport capability that the selected provider does not declare, startup stops with a diagnostic instead of launching a known-incompatible route.
 
-Cloudflare Named Tunnel, ngrok, Tailscale Funnel, localhost.run, or other transports can be added later behind the same provider contract without changing OpenCode, terminal, or supervisor semantics.
+Cloudflare Named Tunnel, ngrok, Tailscale Funnel, or other transports can be added later behind the same provider contract without changing OpenCode, terminal, or supervisor semantics.
 
 ## 6. Startup order
 
@@ -241,10 +242,11 @@ The required startup order is:
 4. start tmux session;
 5. start ttyd and verify local readiness;
 6. start OpenCode and verify local API readiness;
-7. select capability-compatible tunnel providers and establish public endpoints for OpenCode and the terminal;
-8. verify public reachability where technically possible;
-9. persist runtime state;
-10. print one concise connection summary.
+7. start the localhost-only OpenCode browser-auth gateway and verify its health endpoint;
+8. select capability-compatible tunnel providers and establish public endpoints for the gateway and terminal;
+9. verify public reachability where technically possible;
+10. persist runtime state;
+11. print one concise connection summary.
 
 If a later step fails, already-running local services should remain available for diagnostics unless continuing would create a security risk.
 
@@ -340,7 +342,7 @@ Files should be split by responsibility rather than accumulating orchestration i
 - **No gratuitous polyglot expansion:** Rust, Zig, C#, Dart, Nim, or other languages require a concrete subsystem-level benefit before entering the repository.
 - **Repository-driven runtime:** notebook cells are not the source of operational truth.
 - **tmux behind ttyd:** browser reconnects must not destroy the working shell.
-- **Capability-driven tunnels:** Serveo/OpenSSH is the zero-config default because OpenCode requires SSE; Cloudflare Quick Tunnel remains available only where its declared capabilities are compatible. Providers must pass protocol-level smoke tests before release.
+- **Capability-driven tunnels:** localhost.run/OpenSSH is the zero-config OpenCode default because it carries SSE without a browser interstitial; Cloudflare Quick Tunnel is the ttyd default because it carries WebSocket. Serveo remains legacy-only. Providers must pass protocol-level smoke tests before release.
 - **Git as durability boundary:** loss of the Colab VM must be treated as normal.
 - **No automatic Git mutation in v0.1:** warnings and status are safer than implicit commits/pushes until recovery semantics are designed.
 - **Explicit health probes:** process existence alone is insufficient evidence of readiness.

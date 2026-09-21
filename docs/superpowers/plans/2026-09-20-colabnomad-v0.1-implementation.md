@@ -1,4 +1,6 @@
 # ColabNomad v0.1 Implementation Plan
+> **Browser-compatibility amendment (2026-09-21):** live Colab/browser validation superseded the original Serveo defaults. OpenCode now uses a local cookie-session gateway exposed through `localhost.run`; ttyd defaults to Cloudflare Quick Tunnel; Serveo remains an explicit legacy provider. The current implementation and core design spec are authoritative where older task text below differs.
+
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -795,10 +797,10 @@ git diff --check
 `release.yml` triggers on tags matching `v*`. Before building/uploading artifacts, run on Ubuntu:
 
 ```text
-COLABNOMAD_LIVE_TUNNEL_TEST=1 go test -tags=live ./tests/smoke -run TestServeoSSE -v
+COLABNOMAD_LIVE_TUNNEL_TEST=1 go test -tags=live ./tests/smoke -run TestLocalhostRunSSE -v
 ```
 
-This job is not allowed to continue on error. A provider outage or SSE buffering failure blocks the release because Serveo is the default OpenCode transport.
+This job is not allowed to continue on error. A provider outage or SSE buffering failure blocks the release because localhost.run is the default OpenCode transport.
 
 - [ ] **Step 3: Build reproducible release binaries**
 
@@ -848,7 +850,7 @@ State explicitly that Colab may terminate the VM at any time, `/content` is ephe
 [ ] notebook bootstraps from selected ColabNomad ref
 [ ] target repository cloned and git remote contains no credential
 [ ] OpenCode authenticated /api/project readiness succeeds for target workspace
-[ ] public OpenCode /api/event delivers SSE through Serveo
+[ ] public OpenCode login works through the browser-auth gateway and /api/event delivers SSE through localhost.run
 [ ] ttyd opens through public tunnel and attaches to persistent tmux
 [ ] closing/reopening browser preserves tmux shell
 [ ] restart opencode does not recreate terminal/tmux

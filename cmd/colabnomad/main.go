@@ -14,6 +14,7 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/app"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/control"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/browserauth"
 )
 
 type cliOptions struct{ Command, Service, Repo, Ref, OpenCodeTunnel, TerminalTunnel, StateDir string }
@@ -67,7 +68,7 @@ func parseArgs(args []string) (cliOptions, error) {
 	if stateDir == "" {
 		stateDir = "/content/.colabnomad"
 	}
-	o := cliOptions{Command: args[0], OpenCodeTunnel: "serveo", TerminalTunnel: "serveo", StateDir: stateDir}
+	o := cliOptions{Command: args[0], OpenCodeTunnel: "localhostrun", TerminalTunnel: "cloudflare", StateDir: stateDir}
 	switch o.Command {
 	case "--help", "-h", "help":
 		if len(args) != 1 {
@@ -88,8 +89,8 @@ func parseArgs(args []string) (cliOptions, error) {
 		f.SetOutput(os.Stderr)
 		f.StringVar(&o.Repo, "repo", "", "repository URL")
 		f.StringVar(&o.Ref, "ref", "", "repository ref")
-		f.StringVar(&o.OpenCodeTunnel, "opencode-tunnel", "serveo", "opencode tunnel")
-		f.StringVar(&o.TerminalTunnel, "terminal-tunnel", "serveo", "terminal tunnel")
+		f.StringVar(&o.OpenCodeTunnel, "opencode-tunnel", "localhostrun", "opencode tunnel")
+		f.StringVar(&o.TerminalTunnel, "terminal-tunnel", "cloudflare", "terminal tunnel")
 		f.StringVar(&o.StateDir, "state-dir", o.StateDir, "state directory")
 		if err := f.Parse(args[1:]); err != nil {
 			return o, err
@@ -97,11 +98,15 @@ func parseArgs(args []string) (cliOptions, error) {
 		if o.Repo == "" {
 			return o, fmt.Errorf("--repo is required")
 		}
-		if o.OpenCodeTunnel != "serveo" {
+		if o.OpenCodeTunnel != "serveo" && o.OpenCodeTunnel != "localhostrun" {
 			return o, fmt.Errorf("opencode tunnel provider %q lacks required SSE capability", o.OpenCodeTunnel)
 		}
 		if o.TerminalTunnel != "serveo" && o.TerminalTunnel != "cloudflare" {
 			return o, fmt.Errorf("unknown terminal tunnel provider %q", o.TerminalTunnel)
+		}
+	case "gateway":
+		if len(args) != 1 {
+			return o, fmt.Errorf("usage: gateway")
 		}
 	case "daemon":
 		f := flag.NewFlagSet("daemon", flag.ContinueOnError)
@@ -124,6 +129,13 @@ func main() {
 	}
 	if o.Command == "help" {
 		fmt.Println(cliUsage())
+		return
+	}
+	if o.Command == "gateway" {
+		if err := browserauth.RunFromEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	if o.Command == "daemon" {

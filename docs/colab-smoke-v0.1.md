@@ -41,8 +41,9 @@ credential-bearing URLs.
 | [ ] | notebook bootstraps from selected ColabNomad ref | |
 | [ ] | target repository cloned and git remote contains no credential | |
 | [ ] | OpenCode authenticated `/api/project` readiness succeeds for target workspace | |
-| [ ] | public OpenCode `/api/event` delivers SSE through Serveo | |
+| [ ] | public OpenCode login succeeds through the browser-auth gateway and `/api/event` delivers SSE through localhost.run | |
 | [ ] | ttyd opens through public tunnel and attaches to persistent tmux | |
+| [ ] | ttyd loads through Cloudflare Quick Tunnel after Basic Auth and upgrades `/ws` to WebSocket | |
 | [ ] | closing/reopening browser preserves tmux shell | |
 | [ ] | `restart opencode` does not recreate terminal/tmux | |
 | [ ] | `restart terminal` does not destroy tmux session | |

@@ -54,7 +54,7 @@ func TestDaemonUpPassesBoundedContextToRuntime(t *testing.T) {
 
 func TestDaemonRuntimeUsesOperationalDefaults(t *testing.T) {
 	r := newDaemonRuntime("/tmp/task8-state")
-	if r.Config.StateDir != "/tmp/task8-state" || r.Config.WorkspaceRoot != "/content/workspaces" || r.Config.OpenCodePort != 4096 || r.Config.TerminalPort != 7681 || r.Config.OpenCodeTunnel != "serveo" || r.Config.TerminalTunnel != "serveo" {
+	if r.Config.StateDir != "/tmp/task8-state" || r.Config.WorkspaceRoot != "/content/workspaces" || r.Config.OpenCodePort != 4096 || r.Config.OpenCodeGatewayPort != 4097 || r.Config.TerminalPort != 7681 || r.Config.OpenCodeTunnel != "localhostrun" || r.Config.TerminalTunnel != "cloudflare" {
 		t.Fatalf("daemon config: %#v", r.Config)
 	}
 }
@@ -101,10 +101,14 @@ func TestSerializedHandlerDoesNotOverlapLifecycleRequests(t *testing.T) {
 }
 
 func TestParseCLI(t *testing.T) {
-	for _, args := range [][]string{{"status"}, {"doctor"}, {"logs", "terminal"}, {"restart", "opencode"}, {"down"}, {"up", "--repo", "https://example/repo", "--terminal-tunnel", "cloudflare"}} {
+	for _, args := range [][]string{{"status"}, {"doctor"}, {"logs", "terminal"}, {"restart", "opencode"}, {"down"}, {"gateway"}, {"up", "--repo", "https://example/repo"}, {"up", "--repo", "https://example/repo", "--opencode-tunnel", "serveo", "--terminal-tunnel", "serveo"}} {
 		if _, err := parseArgs(args); err != nil {
 			t.Errorf("%v: %v", args, err)
 		}
+	}
+	o, err := parseArgs([]string{"up", "--repo", "https://example/repo"})
+	if err != nil || o.OpenCodeTunnel != "localhostrun" || o.TerminalTunnel != "cloudflare" {
+		t.Fatalf("default tunnels = %q/%q err=%v", o.OpenCodeTunnel, o.TerminalTunnel, err)
 	}
 	if _, err := parseArgs([]string{"up", "--repo", "x", "--opencode-tunnel", "cloudflare"}); err == nil {
 		t.Error("expected opencode capability rejection")

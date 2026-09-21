@@ -50,7 +50,7 @@ class NotebookStructureTests(unittest.TestCase):
         colab.userdata = userdata
         google = types.ModuleType("google")
         google.colab = colab
-        summary = '{"OpenCodeURL":"https://open.serveo.net","TerminalURL":"https://term.serveo.net"}\n'
+        summary = '{"OpenCodeURL":"https://open.lhr.life","TerminalURL":"https://term.trycloudflare.com"}\n'
 
         def fake_run(argv, **kwargs):
             if argv and argv[0] == "python":
@@ -68,8 +68,8 @@ class NotebookStructureTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}), \
              mock.patch("subprocess.run", side_effect=fake_run), redirect_stdout(output):
             exec(second, namespace)
-        self.assertIn("https://open.serveo.net", output.getvalue())
-        self.assertIn("https://term.serveo.net", output.getvalue())
+        self.assertIn("https://open.lhr.life", output.getvalue())
+        self.assertIn("https://term.trycloudflare.com", output.getvalue())
 
     def test_notebook_contains_no_runtime_orchestration(self):
         text = Path("notebook/colabnomad.ipynb").read_text(encoding="utf-8")

@@ -12,6 +12,7 @@ import (
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/tunnel"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/state"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/supervisor"
 )
@@ -56,6 +57,34 @@ func (s doctorService) Prepare(context.Context) error { return nil }
 func (s doctorService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
 func (s doctorService) Probe(context.Context) error   { return s.err }
 func (s doctorService) Cleanup(context.Context) error { return nil }
+
+func TestUpAppliesBrowserCompatibleTunnelDefaults(t *testing.T) {
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: t.TempDir()}, Compose: func(context.Context, UpRequest) (*Composition, error) {
+		return &Composition{Endpoints: map[string]string{"opencode": "https://o", "terminal": "https://t"}}, nil
+	}}
+	if _, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Config.OpenCodeTunnel != config.TunnelLocalhostRun || r.Config.TerminalTunnel != config.TunnelCloudflare || r.Config.OpenCodeGatewayPort != 4097 {
+		t.Fatalf("effective defaults = %#v", r.Config)
+	}
+}
+
+func TestUpRejectsGatewayPortCollision(t *testing.T) {
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: t.TempDir(), OpenCodePort: 4096, OpenCodeGatewayPort: 4096, TerminalPort: 7681}}
+	if _, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo"}); err == nil || !strings.Contains(err.Error(), "service ports must be distinct") {
+		t.Fatalf("gateway collision error = %v", err)
+	}
+}
+
+func TestServicePortUsesGatewayPortForGatewayAndOpenCodeTunnel(t *testing.T) {
+	c := config.RuntimeConfig{OpenCodePort: 4096, OpenCodeGatewayPort: 4097, TerminalPort: 7681}
+	for _, name := range []string{"opencode-gateway", "tunnel:opencode"} {
+		if got := servicePort(name, c); got != 4097 {
+			t.Fatalf("%s port = %d", name, got)
+		}
+	}
+}
 
 func TestUpRejectsOccupiedPortWithoutTouchingListener(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -226,4 +255,66 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+func TestSelectTunnelProvidersSupportsBrowserDefaultsAndLegacyServeo(t *testing.T) {
+	open, err := selectOpenCodeTunnel(config.TunnelLocalhostRun, "/usr/bin/ssh")
+	if err != nil || open.Name() != "localhostrun" {
+		t.Fatalf("opencode provider = %v, %v", open, err)
+	}
+	if err := tunnel.Validate(open, tunnel.Requirements{SSE: true}); err != nil {
+		t.Fatal(err)
+	}
+	legacyOpen, err := selectOpenCodeTunnel(config.TunnelServeo, "/usr/bin/ssh")
+	if err != nil || legacyOpen.Name() != "serveo" {
+		t.Fatalf("legacy opencode provider = %v, %v", legacyOpen, err)
+	}
+	term, err := selectTerminalTunnel(config.TunnelCloudflare, "/usr/bin/ssh", "/bin/cloudflared")
+	if err != nil || term.Name() != "cloudflare" {
+		t.Fatalf("terminal provider = %v, %v", term, err)
+	}
+	if _, err := selectOpenCodeTunnel(config.TunnelCloudflare, "/usr/bin/ssh"); err == nil {
+		t.Fatal("cloudflare unexpectedly accepted for opencode")
+	}
+}
+
+func TestNewOpenCodeGatewayServiceUsesDedicatedPortAndSecrets(t *testing.T) {
+	c := config.RuntimeConfig{OpenCodePort: 4096, OpenCodeGatewayPort: 4097}
+	cred := state.Credentials{OpenCodeUser: "opencode", OpenCodePassword: "secret"}
+	g := newOpenCodeGatewayService("/bin/colabnomad", c, cred, "session-token")
+	if g.BackendPort != 4096 || g.ListenPort != 4097 || g.Username != "opencode" || g.Password != "secret" || g.SessionToken != "session-token" || g.Binary != "/bin/colabnomad" {
+		t.Fatalf("gateway = %#v", g)
+	}
+}
+
+type namedGraphService struct{ name string }
+
+func (s namedGraphService) Name() string                  { return s.name }
+func (s namedGraphService) Dependencies() []string        { return nil }
+func (s namedGraphService) Prepare(context.Context) error { return nil }
+func (s namedGraphService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s namedGraphService) Probe(context.Context) error   { return nil }
+func (s namedGraphService) Cleanup(context.Context) error { return nil }
+
+func TestNewTunnelServicesTargetsGatewayAndTerminalSeparately(t *testing.T) {
+	c := config.RuntimeConfig{OpenCodeGatewayPort: 4097, TerminalPort: 7681}
+	cred := state.Credentials{OpenCodeUser: "opencode", OpenCodePassword: "open-secret", TerminalUser: "terminal", TerminalPassword: "term-secret"}
+	openProvider := tunnel.NewLocalhostRun("ssh", "")
+	termProvider := tunnel.NewCloudflare("cloudflared")
+	gateway := namedGraphService{name: "opencode-gateway"}
+	terminal := namedGraphService{name: "terminal"}
+
+	to, tt := newTunnelServices(c, "/state", openProvider, termProvider, gateway, terminal, cred)
+	if to.Name() != "tunnel:opencode" || to.LocalPort != 4097 || len(to.Dependencies()) != 1 || to.Dependencies()[0] != "opencode-gateway" || !to.Requirements.SSE {
+		t.Fatalf("opencode tunnel = %#v deps=%#v", to, to.Dependencies())
+	}
+	if to.Auth == nil || to.Auth.Username != "opencode" || to.Auth.Password != "open-secret" {
+		t.Fatalf("opencode tunnel auth = %#v", to.Auth)
+	}
+	if tt.Name() != "tunnel:terminal" || tt.LocalPort != 7681 || len(tt.Dependencies()) != 1 || tt.Dependencies()[0] != "terminal" || !tt.Requirements.WebSocket {
+		t.Fatalf("terminal tunnel = %#v deps=%#v", tt, tt.Dependencies())
+	}
+	if tt.Auth == nil || tt.Auth.Username != "terminal" || tt.Auth.Password != "term-secret" {
+		t.Fatalf("terminal tunnel auth = %#v", tt.Auth)
+	}
 }

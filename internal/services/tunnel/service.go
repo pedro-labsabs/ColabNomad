@@ -26,6 +26,7 @@ type Service struct {
 	Client       *http.Client
 	FirstFrame   time.Duration
 	EventPath    string
+	Label        string
 
 	mu        sync.RWMutex
 	publicURL string
@@ -36,6 +37,9 @@ func NewService(provider Provider, local supervisor.Service, stateDir string, lo
 }
 
 func (s *Service) Name() string {
+	if s.Label != "" {
+		return "tunnel:" + s.Label
+	}
 	dependency := s.Dependency
 	if s.Local != nil {
 		dependency = s.Local.Name()

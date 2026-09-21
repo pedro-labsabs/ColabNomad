@@ -8,14 +8,15 @@ import (
 type TunnelProviderName string
 
 const (
-	TunnelServeo     TunnelProviderName = "serveo"
-	TunnelCloudflare TunnelProviderName = "cloudflare"
+	TunnelServeo       TunnelProviderName = "serveo"
+	TunnelCloudflare   TunnelProviderName = "cloudflare"
+	TunnelLocalhostRun TunnelProviderName = "localhostrun"
 )
 
 type RuntimeConfig struct {
-	StateDir, WorkspaceRoot, RepoURL, RepoRef string
-	OpenCodePort, TerminalPort                int
-	OpenCodeTunnel, TerminalTunnel            TunnelProviderName
+	StateDir, WorkspaceRoot, RepoURL, RepoRef       string
+	OpenCodePort, OpenCodeGatewayPort, TerminalPort int
+	OpenCodeTunnel, TerminalTunnel                  TunnelProviderName
 }
 
 func Default(repoURL string) RuntimeConfig {
@@ -24,14 +25,15 @@ func Default(repoURL string) RuntimeConfig {
 		stateDir = "/content/.colabnomad"
 	}
 	return RuntimeConfig{
-		StateDir:       stateDir,
-		WorkspaceRoot:  "/content/workspaces",
-		RepoURL:        repoURL,
-		RepoRef:        "",
-		OpenCodePort:   4096,
-		TerminalPort:   7681,
-		OpenCodeTunnel: TunnelServeo,
-		TerminalTunnel: TunnelServeo,
+		StateDir:            stateDir,
+		WorkspaceRoot:       "/content/workspaces",
+		RepoURL:             repoURL,
+		RepoRef:             "",
+		OpenCodePort:        4096,
+		OpenCodeGatewayPort: 4097,
+		TerminalPort:        7681,
+		OpenCodeTunnel:      TunnelLocalhostRun,
+		TerminalTunnel:      TunnelCloudflare,
 	}
 }
 
