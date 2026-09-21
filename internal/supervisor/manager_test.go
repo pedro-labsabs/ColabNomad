@@ -46,11 +46,12 @@ func (h *fakeHandle) Stop(time.Duration) error {
 }
 
 type fakeRunner struct {
-	mu      sync.Mutex
-	starts  []string
-	handles []*fakeHandle
-	nextErr error
-	exit    bool
+	mu        sync.Mutex
+	starts    []string
+	handles   []*fakeHandle
+	nextErr   error
+	startErrs []error
+	exit      bool
 }
 
 type fakeTimer struct {
@@ -125,6 +126,13 @@ func (r *fakeRunner) Start(s execx.ManagedSpec) (execx.ProcessHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, s.Path)
+	if len(r.startErrs) > 0 {
+		err := r.startErrs[0]
+		r.startErrs = r.startErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if r.nextErr != nil {
 		return nil, r.nextErr
 	}
@@ -200,6 +208,43 @@ func TestManagerStopsAfterRestartBudget(t *testing.T) {
 	}
 	if runner.count() != 4 {
 		t.Fatalf("starts = %d, want 4", runner.count())
+	}
+}
+
+func TestManagerUsesRemainingRestartBudgetAfterFailedRetry(t *testing.T) {
+	runner := &fakeRunner{startErrs: []error{nil, fmt.Errorf("first restart failed"), fmt.Errorf("second restart failed"), nil}}
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3}, WithClock(clock))
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	initialGeneration := m.generation["svc"]
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+
+	clock.Advance(500 * time.Millisecond)
+	waitFor(t, func() bool { return runner.count() == 2 })
+	if m.ServicePID("svc") != 0 {
+		t.Fatalf("service PID during retry = %d, want 0", m.ServicePID("svc"))
+	}
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(time.Second)
+	waitFor(t, func() bool { return runner.count() == 3 })
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(2 * time.Second)
+	waitFor(t, func() bool { return runner.count() == 4 && m.State("svc") == Healthy })
+
+	if runner.count() != 4 {
+		t.Fatalf("starts = %d, want 4", runner.count())
+	}
+	if m.ServicePID("svc") != 4 {
+		t.Fatalf("service PID = %d, want 4", m.ServicePID("svc"))
+	}
+	if m.State("svc") != Healthy {
+		t.Fatalf("service state = %s, want healthy", m.State("svc"))
+	}
+	if m.generation["svc"] != initialGeneration {
+		t.Fatalf("generation = %d, want %d", m.generation["svc"], initialGeneration)
 	}
 }
 

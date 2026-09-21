@@ -156,6 +156,11 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool)
 	m.mu.Unlock()
 	if err := m.waitReady(ctx, name, service, h); err != nil {
 		m.setState(name, Unhealthy)
+		m.mu.Lock()
+		if m.handles[name] == h {
+			delete(m.handles, name)
+		}
+		m.mu.Unlock()
 		_ = h.Stop(0)
 		return err
 	}
@@ -211,10 +216,14 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 
 func (m *Manager) monitor(ctx context.Context, name string, service Service, h execx.ProcessHandle) {
 	<-h.Done()
-	m.mu.RLock()
+	m.mu.Lock()
 	current := m.handles[name] == h && m.state[name] == Healthy
 	generation := m.generation[name]
-	m.mu.RUnlock()
+	if current {
+		delete(m.handles, name)
+		m.state[name] = Unhealthy
+	}
+	m.mu.Unlock()
 	if !current {
 		return
 	}
@@ -310,7 +319,7 @@ func (m *Manager) setState(name string, state State) {
 func (m *Manager) isGenerationCurrent(name string, generation uint64) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.generation[name] == generation && m.state[name] == Healthy
+	return m.generation[name] == generation
 }
 
 func (m *Manager) topologicalOrder() ([]string, error) {
