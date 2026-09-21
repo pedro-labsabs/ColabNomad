@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -13,6 +14,28 @@ import (
 )
 
 type OSProcessRunner struct{}
+
+type managedStartRequest struct {
+	cmd     *exec.Cmd
+	started chan error
+}
+
+var managedStartRequests = make(chan managedStartRequest)
+
+func init() {
+	go func() {
+		runtime.LockOSThread()
+		for request := range managedStartRequests {
+			request.started <- request.cmd.Start()
+		}
+	}()
+}
+
+func startManagedCmd(cmd *exec.Cmd) error {
+	started := make(chan error, 1)
+	managedStartRequests <- managedStartRequest{cmd: cmd, started: started}
+	return <-started
+}
 
 func managedChildSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
@@ -75,7 +98,7 @@ func (OSProcessRunner) Start(spec ManagedSpec) (ProcessHandle, error) {
 		cmd.Stderr = stderr
 	}
 	cmd.SysProcAttr = managedChildSysProcAttr()
-	if err := cmd.Start(); err != nil {
+	if err := startManagedCmd(cmd); err != nil {
 		if stdout != nil {
 			stdout.Close()
 		}
