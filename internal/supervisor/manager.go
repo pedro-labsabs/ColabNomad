@@ -82,8 +82,23 @@ func NewManager(services []Service, runner execx.ProcessRunner, policy RestartPo
 func (m *Manager) State(name string) State { m.mu.RLock(); defer m.mu.RUnlock(); return m.state[name] }
 
 // Snapshot returns a copy of current service states for read-only status use.
-func (m *Manager) Snapshot() map[string]State { m.mu.RLock(); defer m.mu.RUnlock(); out := make(map[string]State, len(m.state)); for k, v := range m.state { out[k] = v }; return out }
-func (m *Manager) ServicePID(name string) int { m.mu.RLock(); defer m.mu.RUnlock(); if h := m.handles[name]; h != nil { return h.PID() }; return 0 }
+func (m *Manager) Snapshot() map[string]State {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]State, len(m.state))
+	for k, v := range m.state {
+		out[k] = v
+	}
+	return out
+}
+func (m *Manager) ServicePID(name string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if h := m.handles[name]; h != nil {
+		return h.PID()
+	}
+	return 0
+}
 
 func (m *Manager) StartAll(ctx context.Context) error {
 	order, err := m.topologicalOrder()
@@ -144,17 +159,44 @@ func (m *Manager) waitReady(ctx context.Context, name string, service Service, h
 	deadline := m.clock.NewTimer(m.readinessTimeout)
 	defer deadline.Stop()
 	for {
-		if err := service.Probe(ctx); err == nil {
-			return nil
-		}
+		probeCtx, cancelProbe := context.WithCancel(ctx)
+		probeResult := make(chan error, 1)
+		go func() { probeResult <- service.Probe(probeCtx) }()
 		select {
+		case err := <-probeResult:
+			cancelProbe()
+			if err == nil {
+				return nil
+			}
+			interval := m.clock.NewTimer(m.probeInterval)
+			select {
+			case <-interval.C():
+			case <-ctx.Done():
+				interval.Stop()
+				return ctx.Err()
+			case <-h.Done():
+				interval.Stop()
+				return fmt.Errorf("process %q exited before readiness", name)
+			case <-deadline.C():
+				interval.Stop()
+				return fmt.Errorf("readiness timeout for %q", name)
+			}
 		case <-ctx.Done():
+			cancelProbe()
 			return ctx.Err()
 		case <-h.Done():
+			cancelProbe()
 			return fmt.Errorf("process %q exited before readiness", name)
 		case <-deadline.C():
+			cancelProbe()
+			select {
+			case err := <-probeResult:
+				if err == nil {
+					return nil
+				}
+			case <-ctx.Done():
+			}
 			return fmt.Errorf("readiness timeout for %q", name)
-		case <-m.clock.NewTimer(m.probeInterval).C():
 		}
 	}
 }

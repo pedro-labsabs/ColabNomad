@@ -48,6 +48,7 @@ func (h *fakeHandle) Stop(time.Duration) error {
 type fakeRunner struct {
 	mu      sync.Mutex
 	starts  []string
+	handles []*fakeHandle
 	nextErr error
 	exit    bool
 }
@@ -128,10 +129,24 @@ func (r *fakeRunner) Start(s execx.ManagedSpec) (execx.ProcessHandle, error) {
 		return nil, r.nextErr
 	}
 	h := &fakeHandle{done: make(chan error), pid: len(r.starts)}
+	r.handles = append(r.handles, h)
 	if r.exit {
 		close(h.done)
 	}
 	return h, nil
+}
+
+func (r *fakeRunner) closeLatest() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.handles) == 0 {
+		return
+	}
+	select {
+	case <-r.handles[len(r.handles)-1].done:
+	default:
+		close(r.handles[len(r.handles)-1].done)
+	}
 }
 
 func TestManagerStartsDependenciesBeforeDependents(t *testing.T) {
@@ -152,15 +167,18 @@ func TestManagerStartsDependenciesBeforeDependents(t *testing.T) {
 }
 
 func TestManagerStopsAfterRestartBudget(t *testing.T) {
-	runner := &fakeRunner{exit: true}
+	runner := &fakeRunner{}
 	clock := &fakeClock{}
 	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3}, WithClock(clock))
 	if err := m.StartAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	runner.closeLatest()
 	waitFor(t, func() bool { return clock.pending() > 0 })
 	clock.Advance(500 * time.Millisecond)
 	waitFor(t, func() bool { return runner.count() == 2 })
+	waitFor(t, func() bool { return m.State("svc") == Healthy })
+	runner.closeLatest()
 	waitFor(t, func() bool { return clock.pending() > 0 })
 	clock.Advance(time.Second)
 	for i := 0; i < 1000000 && runner.count() != 3; i++ {
@@ -169,9 +187,13 @@ func TestManagerStopsAfterRestartBudget(t *testing.T) {
 	if runner.count() != 3 {
 		t.Fatalf("after second advance starts=%d pending=%d state=%s", runner.count(), clock.pending(), m.State("svc"))
 	}
+	waitFor(t, func() bool { return m.State("svc") == Healthy })
+	runner.closeLatest()
 	waitFor(t, func() bool { return clock.pending() > 0 })
 	clock.Advance(2 * time.Second)
 	waitFor(t, func() bool { return runner.count() == 4 })
+	waitFor(t, func() bool { return m.State("svc") == Healthy })
+	runner.closeLatest()
 	waitFor(t, func() bool { return m.State("svc") == Unhealthy })
 	if m.State("svc") != Unhealthy {
 		t.Fatal("service did not become unhealthy")
@@ -200,12 +222,13 @@ func TestManagerDetectsExitBeforeReadiness(t *testing.T) {
 
 func TestManagerCancelsRestartBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := &fakeRunner{exit: true}
+	runner := &fakeRunner{}
 	clock := &fakeClock{}
 	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 3, InitialBackoff: time.Second}, WithClock(clock))
 	if err := m.StartAll(ctx); err != nil {
 		t.Fatal(err)
 	}
+	runner.closeLatest()
 	cancel()
 	waitFor(t, func() bool { return m.State("svc") == Unhealthy })
 	if m.State("svc") != Unhealthy {
@@ -233,6 +256,56 @@ func TestManagerReadinessTimeout(t *testing.T) {
 		t.Fatal("readiness did not time out")
 	}
 }
+
+func TestManagerReadinessTimeoutCancelsBlockingProbe(t *testing.T) {
+	clock := &fakeClock{}
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	svc := &blockingProbeService{name: "blocking", started: started, cancelled: cancelled}
+	m := NewManager([]Service{svc}, &fakeRunner{}, RestartPolicy{MaxRestarts: 0}, WithClock(clock), WithReadinessTimeout(2*time.Second))
+	result := make(chan error, 1)
+	go func() { result <- m.StartAll(context.Background()) }()
+	waitFor(t, func() bool {
+		select {
+		case <-started:
+			return true
+		default:
+			return false
+		}
+	})
+	waitFor(t, func() bool { return clock.pending() >= 1 })
+	clock.Advance(2 * time.Second)
+	select {
+	case err := <-result:
+		if err == nil || !contains(err, "readiness timeout") {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocking probe did not time out")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("probe context was not cancelled")
+	}
+}
+
+type blockingProbeService struct {
+	name               string
+	started, cancelled chan struct{}
+}
+
+func (s *blockingProbeService) Name() string                  { return s.name }
+func (s *blockingProbeService) Dependencies() []string        { return nil }
+func (s *blockingProbeService) Prepare(context.Context) error { return nil }
+func (s *blockingProbeService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s *blockingProbeService) Probe(ctx context.Context) error {
+	close(s.started)
+	<-ctx.Done()
+	close(s.cancelled)
+	return ctx.Err()
+}
+func (s *blockingProbeService) Cleanup(context.Context) error { return nil }
 
 func TestManagerExplicitRestartDoesNotTriggerAutomaticRestart(t *testing.T) {
 	runner := &fakeRunner{}

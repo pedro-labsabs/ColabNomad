@@ -4,15 +4,59 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/app"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/control"
 )
 
 func TestDaemonRuntimeUsesOperationalDefaults(t *testing.T) {
 	r := newDaemonRuntime("/tmp/task8-state")
 	if r.Config.StateDir != "/tmp/task8-state" || r.Config.WorkspaceRoot != "/content/workspaces" || r.Config.OpenCodePort != 4096 || r.Config.TerminalPort != 7681 || r.Config.OpenCodeTunnel != "serveo" || r.Config.TerminalTunnel != "serveo" {
 		t.Fatalf("daemon config: %#v", r.Config)
+	}
+}
+
+func TestControlTimeoutsMatchCommandWorkloads(t *testing.T) {
+	if controlTimeout("up") < 3*time.Minute {
+		t.Fatalf("up timeout too short: %s", controlTimeout("up"))
+	}
+	if controlTimeout("doctor") <= controlTimeout("status") {
+		t.Fatalf("doctor timeout must exceed status: doctor=%s status=%s", controlTimeout("doctor"), controlTimeout("status"))
+	}
+	for _, command := range []string{"status", "logs", "restart", "down"} {
+		if controlTimeout(command) <= 0 || controlTimeout(command) >= time.Minute {
+			t.Fatalf("short command timeout out of bounds: %s=%s", command, controlTimeout(command))
+		}
+	}
+}
+
+func TestSerializedHandlerDoesNotOverlapLifecycleRequests(t *testing.T) {
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	h := serializedHandler(func(control.Request) control.Response {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return control.Response{OK: true}
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = h(control.Request{Command: "up"}) }()
+	}
+	wg.Wait()
+	if maxActive != 1 {
+		t.Fatalf("serialized handler overlapped %d requests", maxActive)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/app"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
@@ -16,6 +18,17 @@ import (
 
 type cliOptions struct{ Command, Service, Repo, Ref, OpenCodeTunnel, TerminalTunnel, StateDir string }
 
+func controlTimeout(command string) time.Duration {
+	switch command {
+	case "up":
+		return 10 * time.Minute
+	case "doctor":
+		return 30 * time.Second
+	default:
+		return 5 * time.Second
+	}
+}
+
 func requestPayload(o cliOptions) []byte {
 	if o.Command == "up" {
 		b, _ := json.Marshal(app.UpRequest{RepoURL: o.Repo, RepoRef: o.Ref, GitHubToken: os.Getenv("GITHUB_TOKEN"), OpenCodeAPIKey: os.Getenv("OPENCODE_API_KEY"), OpenCodeTunnel: config.TunnelProviderName(o.OpenCodeTunnel), TerminalTunnel: config.TunnelProviderName(o.TerminalTunnel)})
@@ -23,6 +36,11 @@ func requestPayload(o cliOptions) []byte {
 	}
 	b, _ := json.Marshal(o)
 	return b
+}
+
+func serializedHandler(handler control.Handler) control.Handler {
+	var mu sync.Mutex
+	return func(req control.Request) control.Response { mu.Lock(); defer mu.Unlock(); return handler(req) }
 }
 
 func parseArgs(args []string) (cliOptions, error) {
@@ -85,7 +103,7 @@ func main() {
 		}
 		return
 	}
-	c := control.Client{Socket: filepath.Join(o.StateDir, "control.sock")}
+	c := control.Client{Socket: filepath.Join(o.StateDir, "control.sock"), Timeout: controlTimeout(o.Command)}
 	payload := requestPayload(o)
 	if err := control.EnsureDaemon(o.StateDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -119,7 +137,7 @@ func runDaemon(stateDir string) error {
 	r := newDaemonRuntime(stateDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, err := control.NewServer(stateDir, func(req control.Request) control.Response {
+	s, err := control.NewServer(stateDir, serializedHandler(func(req control.Request) control.Response {
 		switch req.Command {
 		case "up":
 			var v app.UpRequest
@@ -162,7 +180,7 @@ func runDaemon(stateDir string) error {
 		default:
 			return control.Response{Error: "unsupported daemon command"}
 		}
-	})
+	}))
 	if err != nil {
 		return err
 	}

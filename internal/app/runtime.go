@@ -311,8 +311,10 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 	}
 	to := tunnel.NewService(tunnel.NewServeo(ssh, ""), open, c.StateDir, c.OpenCodePort)
 	to.Requirements = tunnel.Requirements{SSE: true}
+	to.FirstFrame = 10 * time.Second
 	tt := tunnel.NewService(terminalTunnel, term, c.StateDir, c.TerminalPort)
 	tt.Requirements = tunnel.Requirements{WebSocket: true}
+	tt.FirstFrame = 10 * time.Second
 	termLogged := loggedService{Service: term, dir: c.StateDir}
 	openLogged := loggedService{Service: open, dir: c.StateDir}
 	tt.Local = termLogged
@@ -367,6 +369,11 @@ func (r *Runtime) Status() state.RuntimeState {
 	return v
 }
 func (r *Runtime) Doctor(ctx context.Context) DoctorResult {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	d := DoctorResult{Healthy: true, Components: map[string]string{}}
 	for n, p := range r.Probes {
 		if p.Err != nil {
