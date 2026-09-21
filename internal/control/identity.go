@@ -90,3 +90,21 @@ func sameOwner(path string, identity ownerIdentity) bool {
 	got, err := readOwner(path)
 	return err == nil && got == identity
 }
+
+func verifySocketReplacement(socket, owner string) (bool, error) {
+	identity, ownerErr := readOwner(owner)
+	if ownerErr == nil && ownerAlive(identity) {
+		return false, fmt.Errorf("daemon owner %d is alive but control socket is unavailable; refusing replacement", identity.PID)
+	}
+	if ownerErr != nil && !os.IsNotExist(ownerErr) {
+		return false, fmt.Errorf("cannot verify daemon owner: %w", ownerErr)
+	}
+	info, statErr := os.Stat(socket)
+	if statErr == nil && info.Mode()&os.ModeSocket != 0 && ownerErr != nil {
+		return false, fmt.Errorf("cannot verify daemon owner for undialable control socket")
+	}
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return false, statErr
+	}
+	return ownerErr == nil, nil
+}

@@ -27,6 +27,11 @@ func NewServer(stateDir string, handler Handler) (*Server, error) {
 		c.Close()
 		return nil, fmt.Errorf("control socket is already live")
 	}
+	owner := ownerPath(stateDir)
+	_, err := verifySocketReplacement(path, owner)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -45,7 +50,6 @@ func NewServer(stateDir string, handler Handler) (*Server, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	owner := ownerPath(stateDir)
 	if err := writeOwner(owner, identity); err != nil {
 		l.Close()
 		os.Remove(path)

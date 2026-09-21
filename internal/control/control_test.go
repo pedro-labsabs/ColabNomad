@@ -77,6 +77,22 @@ func TestEnsureDaemonRefusesUndialableSocketWithLiveOwner(t *testing.T) {
 	}
 }
 
+func TestNewServerRefusesUndialableSocketWithLiveOwner(t *testing.T) {
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "control.sock")
+	createUndialableSocket(t, socket)
+	writeTestOwner(t, dir, os.Getpid(), currentProcessStartTime(t))
+	if _, err := NewServer(dir, nil); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("NewServer error = %v, want actionable live-owner error", err)
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("undialable socket was removed: %v", err)
+	}
+	if _, err := os.Stat(ownerPath(dir)); err != nil {
+		t.Fatalf("owner identity was removed: %v", err)
+	}
+}
+
 func TestEnsureDaemonReplacesSocketWithDeadOwner(t *testing.T) {
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "control.sock")

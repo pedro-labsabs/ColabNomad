@@ -15,3 +15,17 @@ Gates passed:
 - `go test -count=1 -race ./...`
 - `go vet ./...`
 - `git diff --check`
+
+## Follow-up hardening
+
+Added `TestNewServerRefusesUndialableSocketWithLiveOwner` as a RED regression,
+then shared the replacement validation with `NewServer`. It now preserves an
+undialable socket and live owner identity, fails closed for unverifiable Unix
+sockets, and still permits confirmed-stale or non-socket replacement.
+
+Follow-up gates passed:
+
+- `go test -count=1 -race ./internal/control -v`
+- `go test -count=1 -race ./...`
+- `go vet ./...`
+- `git diff --check`

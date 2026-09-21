@@ -59,24 +59,14 @@ func ensureDaemonSocket(stateDir string, _ int, start func() error) error {
 		return nil
 	}
 	owner := ownerPath(stateDir)
-	identity, ownerErr := readOwner(owner)
-	if ownerErr == nil && ownerAlive(identity) {
-		return fmt.Errorf("daemon owner %d is alive but control socket is unavailable; refusing replacement", identity.PID)
-	}
-	if ownerErr != nil && !os.IsNotExist(ownerErr) {
-		return fmt.Errorf("cannot verify daemon owner: %w", ownerErr)
-	}
-	info, statErr := os.Stat(path)
-	if statErr == nil && info.Mode()&os.ModeSocket != 0 && ownerErr != nil {
-		return fmt.Errorf("cannot verify daemon owner for undialable control socket")
-	}
-	if statErr != nil && !os.IsNotExist(statErr) {
-		return statErr
+	hasOwner, err := verifySocketReplacement(path, owner)
+	if err != nil {
+		return err
 	}
 	if err := removeSocket(path); err != nil {
 		return err
 	}
-	if ownerErr == nil {
+	if hasOwner {
 		if err := removeSocket(owner); err != nil {
 			return err
 		}
