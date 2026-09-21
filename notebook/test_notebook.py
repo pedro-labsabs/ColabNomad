@@ -1,6 +1,11 @@
+import io
 import json
+import sys
+import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 class NotebookStructureTests(unittest.TestCase):
@@ -32,6 +37,39 @@ class NotebookStructureTests(unittest.TestCase):
         self.assertIn("GITHUB_TOKEN", second)
         self.assertIn("OPENCODE_API_KEY", second)
         self.assertIn("env=bootstrap_env", second)
+        self.assertIn("SecretNotFoundError", second)
+
+    def test_notebook_prints_bootstrap_connection_summary(self):
+        with Path("notebook/colabnomad.ipynb").open(encoding="utf-8") as notebook:
+            nb = json.load(notebook)
+        code = [cell for cell in nb["cells"] if cell["cell_type"] == "code"]
+        second = "".join(code[1]["source"])
+
+        userdata = types.SimpleNamespace(get=lambda _name: None)
+        colab = types.ModuleType("google.colab")
+        colab.userdata = userdata
+        google = types.ModuleType("google")
+        google.colab = colab
+        summary = '{"OpenCodeURL":"https://open.serveo.net","TerminalURL":"https://term.serveo.net"}\n'
+
+        def fake_run(argv, **kwargs):
+            if argv and argv[0] == "python":
+                return mock.Mock(returncode=0, stdout=summary, check_returncode=lambda: None)
+            return mock.Mock(returncode=0, stdout="", check_returncode=lambda: None)
+
+        namespace = {
+            "COLABNOMAD_REPO": "https://github.com/pedro-labsabs/ColabNomad.git",
+            "COLABNOMAD_REF": "main",
+            "COLABNOMAD_RELEASE": "",
+            "TARGET_REPO": "https://github.com/pedro-labsabs/opjev",
+            "TARGET_REF": "",
+        }
+        output = io.StringIO()
+        with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}), \
+             mock.patch("subprocess.run", side_effect=fake_run), redirect_stdout(output):
+            exec(second, namespace)
+        self.assertIn("https://open.serveo.net", output.getvalue())
+        self.assertIn("https://term.serveo.net", output.getvalue())
 
     def test_notebook_contains_no_runtime_orchestration(self):
         text = Path("notebook/colabnomad.ipynb").read_text(encoding="utf-8")

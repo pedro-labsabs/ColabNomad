@@ -220,6 +220,20 @@ class BootstrapTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}):
             self.assertIsNone(bootstrap._userdata_get("GITHUB_TOKEN"))
 
+    def test_userdata_secret_not_found_is_treated_as_missing_optional_secret(self):
+        class SecretNotFoundError(Exception):
+            pass
+
+        fake_userdata = mock.Mock()
+        fake_userdata.SecretNotFoundError = SecretNotFoundError
+        fake_userdata.get.side_effect = SecretNotFoundError("GITHUB_TOKEN")
+        google = types.ModuleType("google")
+        colab = types.ModuleType("google.colab")
+        colab.userdata = fake_userdata
+        google.colab = colab
+        with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}):
+            self.assertIsNone(bootstrap._userdata_get("GITHUB_TOKEN"))
+
     def test_collect_colab_secrets_prefers_environment_without_userdata_lookup(self):
         with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token", "OPENCODE_API_KEY": "env-key"}, clear=False), \
              mock.patch.object(bootstrap, "_userdata_get") as get:

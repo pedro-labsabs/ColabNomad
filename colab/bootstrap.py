@@ -177,9 +177,17 @@ def build_checked_out(config, repo_root):
 def _userdata_get(name):
     try:
         from google.colab import userdata
-        return userdata.get(name)
-    except (ImportError, KeyError, RuntimeError, AttributeError):
+    except ImportError:
         return None
+    try:
+        return userdata.get(name)
+    except (KeyError, RuntimeError, AttributeError):
+        return None
+    except Exception as exc:
+        secret_not_found = getattr(userdata, "SecretNotFoundError", None)
+        if secret_not_found is not None and isinstance(exc, secret_not_found):
+            return None
+        raise
 
 
 def collect_colab_secrets():
