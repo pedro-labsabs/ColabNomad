@@ -132,6 +132,9 @@ type Runtime struct {
 	ToolPaths         map[string]string
 	RedactionSecrets  []string
 	SupervisorContext context.Context
+	endpointMu        sync.RWMutex
+	endpointSyncMu    sync.Mutex
+	endpointSyncErr   error
 	running           bool
 	downOnce          sync.Once
 	downErr           error
@@ -293,14 +296,90 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if comp.ServiceMap != nil {
 		r.Services = comp.ServiceMap
 	}
-	r.EndpointServices = comp.Endpoints
+	r.endpointMu.Lock()
+	r.EndpointServices = copyEndpoints(comp.Endpoints)
+	r.endpointSyncErr = nil
+	r.endpointMu.Unlock()
 	r.Config = c
 	r.running = true
+	if manager != nil {
+		manager.SetHealthyCallback(r.handleHealthyService)
+	}
 	return r.connectionSummary()
 }
 
 func (r *Runtime) connectionSummary() (ConnectionSummary, error) {
-	return ConnectionSummary{OpenCodeURL: r.EndpointServices["opencode"], TerminalURL: r.EndpointServices["terminal"], OpenCodeUser: r.Credentials.OpenCodeUser, OpenCodePassword: r.Credentials.OpenCodePassword, TerminalUser: r.Credentials.TerminalUser, TerminalPassword: r.Credentials.TerminalPassword}, nil
+	r.endpointMu.RLock()
+	openCodeURL := r.EndpointServices["opencode"]
+	terminalURL := r.EndpointServices["terminal"]
+	r.endpointMu.RUnlock()
+	return ConnectionSummary{OpenCodeURL: openCodeURL, TerminalURL: terminalURL, OpenCodeUser: r.Credentials.OpenCodeUser, OpenCodePassword: r.Credentials.OpenCodePassword, TerminalUser: r.Credentials.TerminalUser, TerminalPassword: r.Credentials.TerminalPassword}, nil
+}
+
+func copyEndpoints(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func endpointKeyForService(name string) (string, bool) {
+	switch name {
+	case "tunnel:opencode":
+		return "opencode", true
+	case "tunnel:terminal":
+		return "terminal", true
+	default:
+		return "", false
+	}
+}
+
+func (r *Runtime) handleHealthyService(name string) {
+	key, ok := endpointKeyForService(name)
+	if !ok {
+		return
+	}
+	service := r.Services[name]
+	endpointService, ok := service.(interface{ PublicURL() string })
+	if !ok {
+		return
+	}
+	current := endpointService.PublicURL()
+	if current == "" {
+		return
+	}
+
+	r.endpointSyncMu.Lock()
+	defer r.endpointSyncMu.Unlock()
+
+	r.endpointMu.Lock()
+	if r.EndpointServices == nil {
+		r.EndpointServices = make(map[string]string)
+	}
+	changed := r.EndpointServices[key] != current
+	if changed {
+		r.EndpointServices[key] = current
+	}
+	retryPersistence := r.endpointSyncErr != nil
+	endpoints := copyEndpoints(r.EndpointServices)
+	r.endpointMu.Unlock()
+	if !changed && !retryPersistence {
+		return
+	}
+
+	persisted, err := r.Store.Load()
+	if err == nil {
+		persisted.Endpoints = endpoints
+		persisted.UpdatedAt = time.Now().UTC()
+		err = r.Store.Save(persisted)
+	}
+	r.endpointMu.Lock()
+	r.endpointSyncErr = err
+	r.endpointMu.Unlock()
 }
 
 func servicePort(name string, c config.RuntimeConfig) int {
@@ -484,12 +563,14 @@ func (r *Runtime) Status() state.RuntimeState {
 			v.Services[name] = item
 		}
 	}
+	r.endpointMu.RLock()
 	if len(r.EndpointServices) > 0 {
 		v.Endpoints = make(map[string]string, len(r.EndpointServices))
 		for k, value := range r.EndpointServices {
 			v.Endpoints[k] = value
 		}
 	}
+	r.endpointMu.RUnlock()
 	return v
 }
 func (r *Runtime) Doctor(ctx context.Context) DoctorResult {
@@ -560,6 +641,13 @@ func (r *Runtime) Doctor(ctx context.Context) DoctorResult {
 		} else {
 			d.Components[name] = "healthy"
 		}
+	}
+	r.endpointMu.RLock()
+	endpointSyncErr := r.endpointSyncErr
+	r.endpointMu.RUnlock()
+	if endpointSyncErr != nil {
+		d.Components["state:endpoints"] = "unhealthy"
+		d.Healthy = false
 	}
 	if r.Config.OpenCodePort != 0 {
 		if portListening(r.Config.OpenCodePort) && componentHealthy(d, "opencode") {

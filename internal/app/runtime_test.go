@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -316,5 +317,81 @@ func TestNewTunnelServicesTargetsGatewayAndTerminalSeparately(t *testing.T) {
 	}
 	if tt.Auth == nil || tt.Auth.Username != "terminal" || tt.Auth.Password != "term-secret" {
 		t.Fatalf("terminal tunnel auth = %#v", tt.Auth)
+	}
+}
+
+type runtimeEndpointService struct {
+	name       string
+	urls       []string
+	mu         sync.Mutex
+	generation int
+}
+
+func (s *runtimeEndpointService) Name() string                  { return s.name }
+func (s *runtimeEndpointService) Dependencies() []string        { return nil }
+func (s *runtimeEndpointService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s *runtimeEndpointService) Probe(context.Context) error   { return nil }
+func (s *runtimeEndpointService) Cleanup(context.Context) error { return nil }
+func (s *runtimeEndpointService) Prepare(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generation < len(s.urls)-1 {
+		s.generation++
+	}
+	return nil
+}
+func (s *runtimeEndpointService) PublicURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.urls[s.generation]
+}
+
+func TestUpPersistsNewEndpointAfterTunnelRestart(t *testing.T) {
+	dir := t.TempDir()
+	endpoint := &runtimeEndpointService{name: "tunnel:opencode", urls: []string{"https://old.lhr.life", "https://new.lhr.life"}, generation: -1}
+	runner := &runtimeFakeRunner{}
+	m := supervisor.NewManager([]supervisor.Service{endpoint}, runner, supervisor.RestartPolicy{MaxRestarts: 1})
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: dir}, Compose: func(context.Context, UpRequest) (*Composition, error) {
+		return &Composition{
+			Services:  []string{"tunnel:opencode"},
+			Endpoints: map[string]string{"opencode": "https://old.lhr.life"},
+			Manager:   m,
+			ServiceMap: map[string]supervisor.Service{
+				"tunnel:opencode": endpoint,
+			},
+		}, nil
+	}}
+	if _, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Restart(context.Background(), "tunnel:opencode"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := r.Status().Endpoints["opencode"]; got != "https://new.lhr.life" {
+		t.Fatalf("runtime endpoint = %q, want new URL", got)
+	}
+	persisted, err := (state.Store{Dir: dir}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Endpoints["opencode"]; got != "https://new.lhr.life" {
+		t.Fatalf("persisted endpoint = %q, want new URL", got)
+	}
+	second, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.OpenCodeURL != "https://new.lhr.life" {
+		t.Fatalf("idempotent up returned OpenCode URL %q, want new URL", second.OpenCodeURL)
+	}
+}
+
+func TestDoctorReportsEndpointStateSyncFailure(t *testing.T) {
+	r := &Runtime{}
+	r.endpointSyncErr = errors.New("persist endpoint state")
+	got := r.Doctor(context.Background())
+	if got.Healthy || got.Components["state:endpoints"] != "unhealthy" {
+		t.Fatalf("endpoint sync failure not surfaced: %#v", got)
 	}
 }

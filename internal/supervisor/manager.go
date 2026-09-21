@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type Manager struct {
 	probeInterval    time.Duration
 	clock            Clock
 	lifetime         context.Context
+	healthyCallback  func(string)
 }
 
 // Timer and Clock isolate scheduling from wall-clock time. Production uses
@@ -103,6 +105,33 @@ func (m *Manager) ServicePID(name string) int {
 	return 0
 }
 
+func (m *Manager) SetHealthyCallback(callback func(string)) {
+	m.mu.Lock()
+	m.healthyCallback = callback
+	healthy := make([]string, 0, len(m.state))
+	if callback != nil {
+		for name, serviceState := range m.state {
+			if serviceState == Healthy {
+				healthy = append(healthy, name)
+			}
+		}
+	}
+	m.mu.Unlock()
+	sort.Strings(healthy)
+	for _, name := range healthy {
+		callback(name)
+	}
+}
+
+func (m *Manager) notifyHealthy(name string) {
+	m.mu.RLock()
+	callback := m.healthyCallback
+	m.mu.RUnlock()
+	if callback != nil {
+		callback(name)
+	}
+}
+
 func (m *Manager) StartAll(ctx context.Context) error {
 	return m.StartAllWithLifetime(ctx, ctx)
 }
@@ -176,6 +205,7 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool,
 		return err
 	}
 	m.setState(name, Healthy)
+	m.notifyHealthy(name)
 	if monitor {
 		monitorCtx := m.lifetime
 		if monitorCtx == nil {

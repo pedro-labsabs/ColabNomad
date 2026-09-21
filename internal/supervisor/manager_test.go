@@ -671,3 +671,83 @@ func TestManagerReadinessTimeoutIncludesLastProbeError(t *testing.T) {
 		t.Fatal("readiness did not time out")
 	}
 }
+
+func TestManagerHealthyCallbackRunsAfterRestart(t *testing.T) {
+	var log []string
+	var mu sync.Mutex
+	runner := &fakeRunner{}
+	svc := &testService{name: "tunnel:opencode", log: &log, mu: &mu}
+	m := NewManager([]Service{svc}, runner, RestartPolicy{MaxRestarts: 1})
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := make(chan string, 1)
+	m.SetHealthyCallback(func(name string) { observed <- name })
+	if got := <-observed; got != "tunnel:opencode" {
+		t.Fatalf("initial healthy replay = %q", got)
+	}
+	if err := m.Restart(context.Background(), "tunnel:opencode"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-observed:
+		if got != "tunnel:opencode" {
+			t.Fatalf("healthy callback name = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy callback was not invoked after restart")
+	}
+}
+
+func TestManagerHealthyCallbackRunsAfterAutomaticRestart(t *testing.T) {
+	var log []string
+	var mu sync.Mutex
+	clock := &fakeClock{}
+	runner := &fakeRunner{}
+	svc := &testService{name: "tunnel:opencode", log: &log, mu: &mu}
+	m := NewManager([]Service{svc}, runner, RestartPolicy{MaxRestarts: 1}, WithClock(clock))
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := make(chan string, 1)
+	m.SetHealthyCallback(func(name string) { observed <- name })
+	if got := <-observed; got != "tunnel:opencode" {
+		t.Fatalf("initial healthy replay = %q", got)
+	}
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(500 * time.Millisecond)
+
+	select {
+	case got := <-observed:
+		if got != "tunnel:opencode" {
+			t.Fatalf("healthy callback name = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy callback was not invoked after automatic restart")
+	}
+}
+
+func TestSetHealthyCallbackReplaysAlreadyHealthyServices(t *testing.T) {
+	var log []string
+	var mu sync.Mutex
+	svc := &testService{name: "tunnel:opencode", log: &log, mu: &mu}
+	m := NewManager([]Service{svc}, &fakeRunner{}, RestartPolicy{MaxRestarts: 1})
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := make(chan string, 1)
+	m.SetHealthyCallback(func(name string) { observed <- name })
+	select {
+	case got := <-observed:
+		if got != "tunnel:opencode" {
+			t.Fatalf("replayed healthy service = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("already healthy service was not replayed when callback was registered")
+	}
+}
