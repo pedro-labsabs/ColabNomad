@@ -223,7 +223,7 @@ Tunnel transport is capability-driven. A provider declares at minimum whether it
 v0.1 ships three providers:
 
 - **localhost.run/OpenSSH:** zero-config default for OpenCode. It is invoked through the system `ssh` client, supports the required SSE transport, and must pass a real SSE smoke test before release.
-- **Cloudflare Quick Tunnel:** default for ttyd, where its WebSocket support is required. It remains rejected for OpenCode because the provider contract does not declare SSE.
+- **Cloudflare Quick Tunnel:** default for ttyd, where its WebSocket support is required. ColabNomad forces the connector transport to HTTP/2 because restricted Colab networks can delay QUIC-to-HTTP/2 fallback beyond the supervisor readiness window. It remains rejected for OpenCode because the provider contract does not declare SSE.
 - **Serveo/OpenSSH:** retained as an explicit legacy provider, but not selected by default for browser UIs because its free browser-warning interstitial is request-scoped and breaks multi-request UI flows.
 
 The tunnel interface owns process startup, public URL discovery, readiness, capability reporting, and lifecycle observation. Tunnel loss must not terminate the underlying OpenCode or tmux sessions.

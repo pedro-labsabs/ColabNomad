@@ -18,8 +18,9 @@ func (c *Cloudflare) Name() string               { return "cloudflare" }
 func (c *Cloudflare) Capabilities() Capabilities { return Capabilities{WebSocket: true} }
 
 func (c *Cloudflare) Command(localPort int, stateDir string) execx.ManagedSpec {
+	// Colab can restrict UDP/QUIC; cloudflared auto fallback can outlive the supervisor readiness window.
 	return execx.ManagedSpec{
-		Spec:       execx.Spec{Path: c.Binary, Args: []string{"tunnel", "--no-autoupdate", "--url", fmt.Sprintf("http://127.0.0.1:%d", localPort)}},
+		Spec:       execx.Spec{Path: c.Binary, Args: []string{"tunnel", "--protocol", "http2", "--no-autoupdate", "--url", fmt.Sprintf("http://127.0.0.1:%d", localPort)}},
 		StdoutPath: filepath.Join(stateDir, fmt.Sprintf("cloudflare.%d.stdout.log", localPort)),
 		StderrPath: filepath.Join(stateDir, fmt.Sprintf("cloudflare.%d.stderr.log", localPort)),
 	}

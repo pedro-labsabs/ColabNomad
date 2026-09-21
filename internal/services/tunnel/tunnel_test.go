@@ -232,7 +232,7 @@ func TestProviderCommandsAndURLDiscoveryAreRestricted(t *testing.T) {
 
 	cloudflare := NewCloudflare("/bin/cloudflared")
 	command = cloudflare.Command(7681, "/state")
-	if got, want := strings.Join(command.Args, " "), "tunnel --no-autoupdate --url http://127.0.0.1:7681"; got != want {
+	if got, want := strings.Join(command.Args, " "), "tunnel --protocol http2 --no-autoupdate --url http://127.0.0.1:7681"; got != want {
 		t.Fatalf("Cloudflare args = %q, want %q", got, want)
 	}
 	if got, err := cloudflare.DiscoverURL("INF https://demo.trycloudflare.com\n"); err != nil || got != "https://demo.trycloudflare.com" {
