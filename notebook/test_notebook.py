@@ -36,6 +36,7 @@ class NotebookStructureTests(unittest.TestCase):
         self.assertIn("from google.colab import userdata", second)
         self.assertIn("GITHUB_TOKEN", second)
         self.assertIn("OPENCODE_API_KEY", second)
+        self.assertIn("LOCALHOST_RUN_SSH_PRIVATE_KEY", second)
         self.assertIn("env=bootstrap_env", second)
         self.assertIn("SecretNotFoundError", second)
         self.assertIn("TimeoutException", second)

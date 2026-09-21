@@ -10,15 +10,26 @@ the Go binary owns the long-lived services and their in-session state.
    Colab and use a **CPU** runtime. GPU is not required.
 2. In the first notebook cell, set `TARGET_REPO` to the repository URL. Set
    `TARGET_REF` too when a particular branch, tag, or ref is required.
-3. Optionally add `GITHUB_TOKEN` and `OPENCODE_API_KEY` as Colab Secrets. The
-   bootstrap reads only those two secret names; a token is useful for private
-   GitHub repositories, and the API key is passed to OpenCode when supplied.
+3. Optionally add `GITHUB_TOKEN`, `OPENCODE_API_KEY`, and
+   `LOCALHOST_RUN_SSH_PRIVATE_KEY` as Colab Secrets. A GitHub token is useful
+   for private repositories, the API key is passed to OpenCode when supplied,
+   and the localhost.run key enables stable OpenCode tunnel identity across SSH
+   reconnects.
 4. Run all notebook cells. The notebook fetches and checks out the configured
    `COLABNOMAD_REF`, then invokes the pinned bootstrap release configured by
    `COLABNOMAD_RELEASE`.
 5. Copy the OpenCode URL and terminal URL printed by the `up` result. Copy the
    one-time OpenCode and terminal usernames/passwords as well. Treat both URLs
    and all credentials as sensitive; do not commit or publish them.
+
+For a long-lived OpenCode browser URL, create a dedicated SSH key, add its
+public key to the free localhost.run account at `https://admin.localhost.run/`,
+and store the matching private key in the Colab Secret
+`LOCALHOST_RUN_SSH_PRIVATE_KEY`. ColabNomad writes that key only to
+`/content/.colabnomad/ssh/localhostrun_ed25519` with mode `0600` and invokes
+OpenSSH with `IdentitiesOnly=yes`. Without this secret, the default remains the
+anonymous `nokey@localhost.run` tunnel; localhost.run may replace that free
+hostname after a disconnect or after some hours.
 
 The bootstrap stores the binary under `/content/.colabnomad/bin`. In the web
 terminal, make it available by name before using the CLI:

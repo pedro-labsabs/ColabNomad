@@ -199,7 +199,7 @@ def _userdata_get(name):
 
 def collect_colab_secrets():
     secrets = {}
-    for name in ("GITHUB_TOKEN", "OPENCODE_API_KEY"):
+    for name in ("GITHUB_TOKEN", "OPENCODE_API_KEY", "LOCALHOST_RUN_SSH_PRIVATE_KEY"):
         value = os.environ.get(name)
         if value is None:
             value = _userdata_get(name)

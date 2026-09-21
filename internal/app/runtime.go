@@ -31,6 +31,7 @@ import (
 
 type UpRequest struct {
 	RepoURL, RepoRef, GitHubToken, OpenCodeAPIKey, VersionsPath string
+	LocalhostRunSSHPrivateKey                                   string
 	OpenCodeTunnel, TerminalTunnel                              config.TunnelProviderName
 }
 type ConnectionSummary struct{ OpenCodeURL, TerminalURL, OpenCodeUser, OpenCodePassword, TerminalUser, TerminalPassword string }
@@ -62,6 +63,66 @@ func selectOpenCodeTunnel(name config.TunnelProviderName, ssh string) (tunnel.Pr
 	default:
 		return nil, fmt.Errorf("opencode tunnel provider %q lacks SSE capability", name)
 	}
+}
+
+func materializeLocalhostRunIdentity(stateDir, privateKey string) (string, error) {
+	if strings.TrimSpace(privateKey) == "" {
+		return "", nil
+	}
+	dir := filepath.Join(stateDir, "ssh")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create localhost.run identity directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return "", fmt.Errorf("secure localhost.run identity directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".localhostrun-identity-*")
+	if err != nil {
+		return "", fmt.Errorf("create localhost.run identity: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("secure localhost.run identity: %w", err)
+	}
+	if _, err := tmp.WriteString(privateKey); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("write localhost.run identity: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("sync localhost.run identity: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close localhost.run identity: %w", err)
+	}
+	path := filepath.Join(dir, "localhostrun_ed25519")
+	if err := os.Rename(tmpPath, path); err != nil {
+		return "", fmt.Errorf("install localhost.run identity: %w", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return "", fmt.Errorf("secure installed localhost.run identity: %w", err)
+	}
+	return path, nil
+}
+
+func prepareOpenCodeTunnelProvider(name config.TunnelProviderName, ssh, stateDir, privateKey string) (tunnel.Provider, error) {
+	provider, err := selectOpenCodeTunnel(name, ssh)
+	if err != nil {
+		return nil, err
+	}
+	if name != config.TunnelLocalhostRun {
+		return provider, nil
+	}
+	identityPath, err := materializeLocalhostRunIdentity(stateDir, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	if localhostRun, ok := provider.(*tunnel.LocalhostRun); ok {
+		localhostRun.IdentityPath = identityPath
+	}
+	return provider, nil
 }
 
 func selectTerminalTunnel(name config.TunnelProviderName, ssh, cloudflared string) (tunnel.Provider, error) {
@@ -247,7 +308,7 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	}
 	// The runtime state contains no credentials; credentials remain in the protected credential file and response.
 	r.Credentials = cred
-	r.RedactionSecrets = []string{req.GitHubToken, req.OpenCodeAPIKey, cred.OpenCodePassword, cred.TerminalPassword}
+	r.RedactionSecrets = []string{req.GitHubToken, req.OpenCodeAPIKey, req.LocalhostRunSSHPrivateKey, cred.OpenCodePassword, cred.TerminalPassword}
 	var comp *Composition
 	if r.Compose != nil {
 		comp, err = r.Compose(ctx, req)
@@ -467,7 +528,7 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 			return nil, fmt.Errorf("install cloudflared: %w", err)
 		}
 	}
-	openTunnel, err := selectOpenCodeTunnel(c.OpenCodeTunnel, ssh)
+	openTunnel, err := prepareOpenCodeTunnelProvider(c.OpenCodeTunnel, ssh, c.StateDir, req.LocalhostRunSSHPrivateKey)
 	if err != nil {
 		return nil, err
 	}

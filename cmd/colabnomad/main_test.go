@@ -170,12 +170,14 @@ func TestUpPayloadUsesSanitizedEnvironmentSecretsWithoutArgv(t *testing.T) {
 	defer os.Setenv("GITHUB_TOKEN", oldG)
 	_ = os.Setenv("OPENCODE_API_KEY", "key\n!@#")
 	_ = os.Setenv("GITHUB_TOKEN", "gh:p@ss")
+	t.Setenv("LOCALHOST_RUN_SSH_PRIVATE_KEY", "private\nkey")
 	o, _ := parseArgs([]string{"up", "--repo", "https://example/repo"})
 	var got app.UpRequest
 	if err := json.Unmarshal(requestPayload(o), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.OpenCodeAPIKey == "" || got.GitHubToken == "" || strings.Contains(strings.Join([]string{o.Command, o.Repo}, " "), got.GitHubToken) {
+	argvText := strings.Join([]string{o.Command, o.Repo}, " ")
+	if got.OpenCodeAPIKey == "" || got.GitHubToken == "" || got.LocalhostRunSSHPrivateKey != "private\nkey" || strings.Contains(argvText, got.GitHubToken) || strings.Contains(argvText, got.LocalhostRunSSHPrivateKey) {
 		t.Fatalf("bad request boundary: %#v", got)
 	}
 }

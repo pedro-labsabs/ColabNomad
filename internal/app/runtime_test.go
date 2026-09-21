@@ -59,6 +59,55 @@ func (s doctorService) Command() execx.ManagedSpec    { return execx.ManagedSpec
 func (s doctorService) Probe(context.Context) error   { return s.err }
 func (s doctorService) Cleanup(context.Context) error { return nil }
 
+func TestMaterializeLocalhostRunIdentityWritesPrivateKey0600(t *testing.T) {
+	dir := t.TempDir()
+	privateKey := "-----BEGIN OPENSSH PRIVATE KEY-----\ntest-key-material\n-----END OPENSSH PRIVATE KEY-----\n"
+	path, err := materializeLocalhostRunIdentity(dir, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(dir, "ssh", "localhostrun_ed25519") {
+		t.Fatalf("identity path = %q", path)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != privateKey {
+		t.Fatalf("identity contents changed")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("identity permissions = %o", info.Mode().Perm())
+	}
+}
+
+func TestMaterializeLocalhostRunIdentitySkipsMissingSecret(t *testing.T) {
+	path, err := materializeLocalhostRunIdentity(t.TempDir(), "")
+	if err != nil || path != "" {
+		t.Fatalf("missing identity = %q, %v", path, err)
+	}
+}
+
+func TestPrepareOpenCodeTunnelProviderUsesMaterializedLocalhostRunIdentity(t *testing.T) {
+	dir := t.TempDir()
+	provider, err := prepareOpenCodeTunnelProvider(config.TunnelLocalhostRun, "/usr/bin/ssh", dir, "private-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := provider.Command(4097, dir)
+	joined := strings.Join(command.Args, " ")
+	if !strings.Contains(joined, "IdentitiesOnly=yes") || !strings.Contains(joined, filepath.Join(dir, "ssh", "localhostrun_ed25519")) {
+		t.Fatalf("prepared provider lacks stable identity: %#v", command.Args)
+	}
+	if strings.Contains(joined, "nokey@localhost.run") {
+		t.Fatalf("prepared provider still uses anonymous localhost.run: %#v", command.Args)
+	}
+}
+
 func TestUpAppliesBrowserCompatibleTunnelDefaults(t *testing.T) {
 	r := &Runtime{Config: config.RuntimeConfig{StateDir: t.TempDir()}, Compose: func(context.Context, UpRequest) (*Composition, error) {
 		return &Composition{Endpoints: map[string]string{"opencode": "https://o", "terminal": "https://t"}}, nil

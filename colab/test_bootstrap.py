@@ -56,11 +56,16 @@ class BootstrapTests(unittest.TestCase):
         config = bootstrap.BootstrapConfig("owner/repo", "main")
         with mock.patch.object(bootstrap, "_userdata_get", return_value="ghp:a@b!punctuation"), \
              mock.patch.object(bootstrap.subprocess, "run") as run:
-            bootstrap.run_up(Path("/state/colabnomad"), config, {"GITHUB_TOKEN": "ghp:a@b!punctuation"})
+            bootstrap.run_up(Path("/state/colabnomad"), config, {
+                "GITHUB_TOKEN": "ghp:a@b!punctuation",
+                "LOCALHOST_RUN_SSH_PRIVATE_KEY": "private-key-material",
+            })
         argv = run.call_args.args[0]
         self.assertNotIn("ghp:a@b!punctuation", argv)
         self.assertNotIn("ghp:a@b!punctuation", repr(argv))
+        self.assertNotIn("private-key-material", repr(argv))
         self.assertEqual(run.call_args.kwargs["env"]["GITHUB_TOKEN"], "ghp:a@b!punctuation")
+        self.assertEqual(run.call_args.kwargs["env"]["LOCALHOST_RUN_SSH_PRIVATE_KEY"], "private-key-material")
         self.assertEqual(argv, ["/state/colabnomad", "up", "--state-dir", "/content/.colabnomad", "--repo", "owner/repo", "--ref", "main"])
 
     def test_platform_key_maps_supported_machines(self):
@@ -249,11 +254,12 @@ class BootstrapTests(unittest.TestCase):
             self.assertIsNone(bootstrap._userdata_get("OPENCODE_API_KEY"))
 
     def test_collect_colab_secrets_prefers_environment_without_userdata_lookup(self):
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token", "OPENCODE_API_KEY": "env-key"}, clear=False), \
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token", "OPENCODE_API_KEY": "env-key", "LOCALHOST_RUN_SSH_PRIVATE_KEY": "private-key"}, clear=False), \
              mock.patch.object(bootstrap, "_userdata_get") as get:
             self.assertEqual(bootstrap.collect_colab_secrets(), {
                 "GITHUB_TOKEN": "env-token",
                 "OPENCODE_API_KEY": "env-key",
+                "LOCALHOST_RUN_SSH_PRIVATE_KEY": "private-key",
             })
         get.assert_not_called()
 

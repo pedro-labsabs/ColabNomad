@@ -78,6 +78,19 @@ func TestLocalhostRunSatisfiesBrowserTransportRequirements(t *testing.T) {
 	}
 }
 
+func TestLocalhostRunUsesRegisteredIdentityForStableReconnects(t *testing.T) {
+	provider := NewLocalhostRun("/usr/bin/ssh", "/state/known_hosts")
+	provider.IdentityPath = "/state/ssh/localhostrun_ed25519"
+	command := provider.Command(4097, "/state")
+	joined := strings.Join(command.Args, " ")
+	if !strings.Contains(joined, "-i /state/ssh/localhostrun_ed25519") || !strings.Contains(joined, "IdentitiesOnly=yes") {
+		t.Fatalf("identity not configured: %#v", command.Args)
+	}
+	if strings.Contains(joined, "nokey@localhost.run") || command.Args[len(command.Args)-1] != "localhost.run" {
+		t.Fatalf("authenticated localhost.run target = %#v", command.Args)
+	}
+}
+
 func TestServeoSatisfiesOpenCodeRequirements(t *testing.T) {
 	if err := Validate(NewServeo("/usr/bin/ssh", "/state/known_hosts"), Requirements{SSE: true}); err != nil {
 		t.Fatal(err)
