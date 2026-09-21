@@ -3,6 +3,8 @@ import io
 import json
 import os
 import subprocess
+import sys
+import types
 import tarfile
 import tempfile
 import unittest
@@ -206,6 +208,39 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("--state-dir", run.call_args.args[0])
         self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--state-dir") + 1], "/custom/state")
         self.assertEqual(run.call_args.kwargs["env"]["COLABNOMAD_STATE_DIR"], "/custom/state")
+
+
+    def test_userdata_attribute_error_is_treated_as_missing_optional_secret(self):
+        fake_userdata = mock.Mock()
+        fake_userdata.get.side_effect = AttributeError("no kernel")
+        google = types.ModuleType("google")
+        colab = types.ModuleType("google.colab")
+        colab.userdata = fake_userdata
+        google.colab = colab
+        with mock.patch.dict(sys.modules, {"google": google, "google.colab": colab}):
+            self.assertIsNone(bootstrap._userdata_get("GITHUB_TOKEN"))
+
+    def test_collect_colab_secrets_prefers_environment_without_userdata_lookup(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token", "OPENCODE_API_KEY": "env-key"}, clear=False), \
+             mock.patch.object(bootstrap, "_userdata_get") as get:
+            self.assertEqual(bootstrap.collect_colab_secrets(), {
+                "GITHUB_TOKEN": "env-token",
+                "OPENCODE_API_KEY": "env-key",
+            })
+        get.assert_not_called()
+
+    def test_release_lookup_uses_current_organization_repository(self):
+        config = bootstrap.BootstrapConfig("owner/repo", release="v0.1.0")
+        error = HTTPError("url", 404, "missing", {}, None)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            bootstrap.urllib.request, "urlopen", side_effect=error
+        ) as urlopen:
+            self.assertIsNone(bootstrap.try_release(config, Path(tmp)))
+        requested = urlopen.call_args.args[0]
+        self.assertTrue(
+            requested.startswith("https://github.com/pedro-labsabs/ColabNomad/releases/download/"),
+            requested,
+        )
 
 
 if __name__ == "__main__":

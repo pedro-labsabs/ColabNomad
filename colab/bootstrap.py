@@ -100,7 +100,7 @@ def try_release(config, repo_root):
     if not config.release:
         return None
     name = _release_name()
-    base = "https://github.com/pedroteste00000008-stack/ColabNomad/releases/download/" + config.release
+    base = "https://github.com/pedro-labsabs/ColabNomad/releases/download/" + config.release
     try:
         with urllib.request.urlopen(base + "/SHA256SUMS", timeout=NETWORK_TIMEOUT) as response:
             checksums = response.read()
@@ -178,14 +178,16 @@ def _userdata_get(name):
     try:
         from google.colab import userdata
         return userdata.get(name)
-    except (ImportError, KeyError, RuntimeError):
+    except (ImportError, KeyError, RuntimeError, AttributeError):
         return None
 
 
 def collect_colab_secrets():
     secrets = {}
     for name in ("GITHUB_TOKEN", "OPENCODE_API_KEY"):
-        value = _userdata_get(name)
+        value = os.environ.get(name)
+        if value is None:
+            value = _userdata_get(name)
         if value:
             secrets[name] = value
     return secrets

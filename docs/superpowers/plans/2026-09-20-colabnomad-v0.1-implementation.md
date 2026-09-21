@@ -675,8 +675,8 @@ class BootstrapConfig:
 For `--release v0.1.0`, try:
 
 ```text
-https://github.com/pedroteste00000008-stack/ColabNomad/releases/download/v0.1.0/colabnomad-linux-<amd64|arm64>
-https://github.com/pedroteste00000008-stack/ColabNomad/releases/download/v0.1.0/SHA256SUMS
+https://github.com/pedro-labsabs/ColabNomad/releases/download/v0.1.0/colabnomad-linux-<amd64|arm64>
+https://github.com/pedro-labsabs/ColabNomad/releases/download/v0.1.0/SHA256SUMS
 ```
 
 Require the named binary to be present in `SHA256SUMS` and verify SHA-256 before chmod/rename. On release absence, read `bootstrap_go` from `config/versions.json`, verify/extract the pinned Go archive into `<stateDir>/toolchains/go-1.27.1`, then run from the checked-out repository:
@@ -739,7 +739,7 @@ def test_notebook_contains_no_runtime_orchestration():
 Cell 1 contains only editable values:
 
 ```python
-COLABNOMAD_REPO = 'https://github.com/pedroteste00000008-stack/ColabNomad.git'
+COLABNOMAD_REPO = 'https://github.com/pedro-labsabs/ColabNomad.git'
 COLABNOMAD_REF = 'v0.1.0'
 COLABNOMAD_RELEASE = 'v0.1.0'
 TARGET_REPO = ''  # user must set this

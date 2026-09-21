@@ -3,7 +3,7 @@
 **Date:** 2026-09-20
 **Status:** Proposed for implementation
 **Owner:** Pedro
-**Repository:** `pedroteste00000008-stack/ColabNomad`
+**Repository:** `pedro-labsabs/ColabNomad`
 
 ## 1. Purpose
 
