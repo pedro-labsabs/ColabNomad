@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,11 @@ func (m Manager) Prepare(ctx context.Context, req Request) (Result, error) {
 		if err := os.MkdirAll(filepath.Dir(req.Root), 0755); err != nil {
 			return result, fmt.Errorf("create workspace parent: %w", err)
 		}
-		spec := execx.Spec{Path: gitPath, Args: cloneArgs(req), Dir: filepath.Dir(req.Root)}
+		args, err := cloneArgs(req)
+		if err != nil {
+			return result, err
+		}
+		spec := execx.Spec{Path: gitPath, Args: args, Dir: filepath.Dir(req.Root)}
 		cleanup, env, err := askpass(req.GitHubToken)
 		if err != nil {
 			return result, fmt.Errorf("prepare GitHub askpass: %w", err)
@@ -67,6 +72,9 @@ func (m Manager) Prepare(ctx context.Context, req Request) (Result, error) {
 		}
 	} else if statErr != nil {
 		return result, fmt.Errorf("inspect workspace: %w", statErr)
+	}
+	if _, err := m.verifyOrigin(ctx, runner, gitPath, req, redact); err != nil {
+		return result, err
 	}
 	status, err := m.run(ctx, runner, gitPath, req.Root, []string{"status", "--porcelain", "--untracked-files=all"}, req.GitHubToken, redact)
 	if err != nil {
@@ -89,12 +97,88 @@ func (m Manager) Prepare(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-func cloneArgs(req Request) []string {
+func (m Manager) verifyOrigin(ctx context.Context, runner execx.Runner, gitPath string, req Request, redact func(string, ...string) string) (bool, error) {
+	origin, err := m.run(ctx, runner, gitPath, req.Root, []string{"remote", "get-url", "origin"}, req.GitHubToken, redact)
+	if err != nil {
+		return false, err
+	}
+	wanted, wantedOK := repositoryIdentity(req.RepoURL)
+	actual, actualOK := repositoryIdentity(origin)
+	if !wantedOK || !actualOK || wanted != actual {
+		err := fmt.Errorf("workspace origin mismatch: requested %q, existing %q", wanted, actual)
+		return false, fmt.Errorf("%s", redact(err.Error(), req.GitHubToken))
+	}
+	return true, nil
+}
+
+func repositoryIdentity(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", false
+		}
+		if strings.EqualFold(u.Scheme, "file") {
+			return "file:" + cleanRepositoryPath(u.Path), u.Path != ""
+		}
+		if u.Hostname() == "" {
+			return "", false
+		}
+		host := strings.ToLower(u.Hostname())
+		if port := u.Port(); port != "" {
+			host += ":" + port
+		}
+		path := strings.TrimLeft(cleanRepositoryPath(u.Path), "/")
+		return "remote:" + host + "/" + path, path != "."
+	}
+	if at := strings.IndexByte(raw, '@'); at > 0 {
+		if colon := strings.IndexByte(raw[at+1:], ':'); colon >= 0 {
+			colon += at + 1
+			if raw[colon+1:] != "" {
+				path := strings.TrimLeft(cleanRepositoryPath(raw[colon+1:]), "/")
+				return "remote:" + strings.ToLower(raw[at+1:colon]) + "/" + path, path != "."
+			}
+		}
+	}
+	path := cleanRepositoryPath(raw)
+	return "file:" + path, path != ""
+}
+
+func cleanRepositoryPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimRight(path, "/")
+	if strings.HasSuffix(path, ".git") {
+		path = strings.TrimRight(strings.TrimSuffix(path, ".git"), "/")
+	}
+	return filepath.Clean(path)
+}
+
+func cloneArgs(req Request) ([]string, error) {
 	args := []string{"clone"}
 	if req.Ref != "" {
 		args = append(args, "--branch", req.Ref)
 	}
-	return append(args, req.RepoURL, req.Root)
+	repoURL, err := cloneURL(req.RepoURL)
+	if err != nil {
+		return nil, fmt.Errorf("prepare clone URL: %w", err)
+	}
+	return append(args, repoURL, req.Root), nil
+}
+
+func cloneURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		return raw, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid repository URL")
+	}
+	u.User = nil
+	return u.String(), nil
 }
 
 func (m Manager) run(ctx context.Context, runner execx.Runner, gitPath, dir string, args []string, token string, redact func(string, ...string) string) (string, error) {
