@@ -3,8 +3,10 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +18,10 @@ import (
 )
 
 type namedLocalService struct{ name string }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 type generationProvider struct {
 	stdoutPath string
@@ -268,5 +274,76 @@ func TestProbeSSEWithHeaders(t *testing.T) {
 	defer server.Close()
 	if err := ProbeSSEWithHeaders(context.Background(), server.Client(), server.URL, nil, map[string]string{"X-Probe": "yes"}, time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloudflareProbeAcceptsDNSWarmupAfterRegisteredConnection(t *testing.T) {
+	stateDir := t.TempDir()
+	provider := NewCloudflare("/bin/cloudflared")
+	s := NewService(provider, namedLocalService{name: "terminal"}, stateDir, 7681)
+	s.Requirements = Requirements{WebSocket: true}
+	s.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: &net.DNSError{Err: "no such host", Name: req.URL.Hostname(), IsNotFound: true}}
+	})}
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	command := provider.Command(7681, stateDir)
+	log := "https://demo.trycloudflare.com\n2026-09-21T00:00:00Z INF Registered tunnel connection connIndex=0 protocol=http2\n"
+	if err := os.WriteFile(command.StderrPath, []byte(log), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatalf("registered Cloudflare tunnel rejected during DNS warm-up: %v", err)
+	}
+	if got := s.PublicURL(); got != "https://demo.trycloudflare.com" {
+		t.Fatalf("PublicURL = %q", got)
+	}
+}
+
+func TestCloudflareProbeRejectsDNSNotFoundBeforeRegisteredConnection(t *testing.T) {
+	stateDir := t.TempDir()
+	provider := NewCloudflare("/bin/cloudflared")
+	s := NewService(provider, namedLocalService{name: "terminal"}, stateDir, 7681)
+	s.Requirements = Requirements{WebSocket: true}
+	s.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: &net.DNSError{Err: "no such host", Name: req.URL.Hostname(), IsNotFound: true}}
+	})}
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	command := provider.Command(7681, stateDir)
+	if err := os.WriteFile(command.StderrPath, []byte("https://demo.trycloudflare.com\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "no such host") {
+		t.Fatalf("DNS failure before registration was accepted: %v", err)
+	}
+}
+
+func TestCloudflareProbeDoesNotMaskHTTPFailureAfterRegistration(t *testing.T) {
+	stateDir := t.TempDir()
+	provider := NewCloudflare("/bin/cloudflared")
+	s := NewService(provider, namedLocalService{name: "terminal"}, stateDir, 7681)
+	s.Requirements = Requirements{WebSocket: true}
+	s.Client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	command := provider.Command(7681, stateDir)
+	log := "https://demo.trycloudflare.com\n2026-09-21T00:00:00Z INF Registered tunnel connection connIndex=0 protocol=http2\n"
+	if err := os.WriteFile(command.StderrPath, []byte(log), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("HTTP failure was masked after registration: %v", err)
 	}
 }

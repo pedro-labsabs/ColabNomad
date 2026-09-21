@@ -2,8 +2,11 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -141,7 +144,29 @@ func (s *Service) Probe(ctx context.Context) error {
 		headers = provider.ProbeHeaders()
 	}
 	_, err = (health.Prober{Client: s.Client}).Do(ctx, health.Request{URL: publicURL, Auth: s.Auth, Headers: headers, WantStatus: http.StatusOK})
+	if err == nil {
+		return nil
+	}
+	if dnsNotFoundForURL(err, publicURL) {
+		if provider, ok := s.Provider.(interface{ ReadyDuringDNSWarmup(string) bool }); ok && provider.ReadyDuringDNSWarmup(string(output)) {
+			return nil
+		}
+	}
 	return err
+}
+
+func dnsNotFoundForURL(err error, rawURL string) bool {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+		return false
+	}
+	parsed, parseErr := url.Parse(rawURL)
+	if parseErr != nil || parsed.Hostname() == "" {
+		return false
+	}
+	want := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	got := strings.TrimSuffix(strings.ToLower(dnsErr.Name), ".")
+	return got == want
 }
 
 func (s *Service) PublicURL() string {

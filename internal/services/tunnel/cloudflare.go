@@ -8,7 +8,10 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 )
 
-var cloudflareURLPattern = regexp.MustCompile(`https://[A-Za-z0-9-]+\.trycloudflare\.com(?:[^\s]*)?`)
+var (
+	cloudflareURLPattern        = regexp.MustCompile(`https://[A-Za-z0-9-]+\.trycloudflare\.com(?:[^\s]*)?`)
+	cloudflareRegisteredPattern = regexp.MustCompile(`(?m)Registered tunnel connection[^\n]*\bprotocol=http2\b`)
+)
 
 type Cloudflare struct{ Binary string }
 
@@ -28,4 +31,8 @@ func (c *Cloudflare) Command(localPort int, stateDir string) execx.ManagedSpec {
 
 func (c *Cloudflare) DiscoverURL(output string) (string, error) {
 	return discoverProviderURL(output, cloudflareURLPattern, "trycloudflare.com")
+}
+
+func (c *Cloudflare) ReadyDuringDNSWarmup(output string) bool {
+	return cloudflareRegisteredPattern.MatchString(output)
 }
