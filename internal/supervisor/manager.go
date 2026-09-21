@@ -267,6 +267,16 @@ func (m *Manager) monitor(ctx context.Context, name string, service Service, h e
 		next := m.handles[name]
 		m.mu.RUnlock()
 		<-next.Done()
+		m.mu.Lock()
+		stillCurrent := m.generation[name] == generation && m.handles[name] == next && m.state[name] == Healthy
+		if stillCurrent {
+			delete(m.handles, name)
+			m.state[name] = Unhealthy
+		}
+		m.mu.Unlock()
+		if !stillCurrent {
+			return
+		}
 	}
 	m.setState(name, Unhealthy)
 }

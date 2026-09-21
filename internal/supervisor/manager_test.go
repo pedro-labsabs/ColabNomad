@@ -270,6 +270,22 @@ func TestManagerUsesRemainingRestartBudgetAfterFailedRetry(t *testing.T) {
 	}
 }
 
+func TestManagerClearsHandleAfterAutomaticRecoveryExit(t *testing.T) {
+	runner := &fakeRunner{}
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 2}, WithClock(clock))
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(500 * time.Millisecond)
+	waitFor(t, func() bool { return runner.count() == 2 && m.State("svc") == Healthy })
+
+	runner.closeLatest()
+	waitFor(t, func() bool { return m.State("svc") == Unhealthy && m.ServicePID("svc") == 0 })
+}
+
 func TestManagerManualRestartCannotRaceAutomaticRecovery(t *testing.T) {
 	prepareEntered := make(chan struct{})
 	prepareRelease := make(chan struct{})
