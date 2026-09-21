@@ -14,6 +14,10 @@ import (
 
 type OSProcessRunner struct{}
 
+func managedChildSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+}
+
 func mergedEnv(overrides map[string]string) []string {
 	values := make(map[string]string)
 	keys := make([]string, 0)
@@ -70,7 +74,7 @@ func (OSProcessRunner) Start(spec ManagedSpec) (ProcessHandle, error) {
 	if stderr != nil {
 		cmd.Stderr = stderr
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = managedChildSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		if stdout != nil {
 			stdout.Close()

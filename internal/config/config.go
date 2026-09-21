@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 type TunnelProviderName string
 
@@ -16,8 +19,12 @@ type RuntimeConfig struct {
 }
 
 func Default(repoURL string) RuntimeConfig {
+	stateDir := os.Getenv("COLABNOMAD_STATE_DIR")
+	if stateDir == "" {
+		stateDir = "/content/.colabnomad"
+	}
 	return RuntimeConfig{
-		StateDir:       "/content/.colabnomad",
+		StateDir:       stateDir,
 		WorkspaceRoot:  "/content/workspaces",
 		RepoURL:        repoURL,
 		RepoRef:        "",

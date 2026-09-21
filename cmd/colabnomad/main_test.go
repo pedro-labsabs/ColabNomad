@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -9,8 +10,47 @@ import (
 	"time"
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/app"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/control"
 )
+
+func TestStartupContextIsBoundedAndCancellable(t *testing.T) {
+	ctx, cancel := boundedStartupContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > startupTimeout {
+		t.Fatalf("startup context deadline = %v, ok=%v", deadline, ok)
+	}
+	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("startup context did not cancel")
+	}
+}
+
+func TestDaemonUpPassesBoundedContextToRuntime(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	observed := make(chan context.Context, 1)
+	r := &app.Runtime{Config: config.RuntimeConfig{StateDir: t.TempDir()}, Compose: func(ctx context.Context, _ app.UpRequest) (*app.Composition, error) {
+		observed <- ctx
+		return nil, ctx.Err()
+	}}
+	cancelParent()
+	_, _ = runDaemonUp(parent, r, app.UpRequest{})
+	select {
+	case ctx := <-observed:
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("daemon Up context has no deadline")
+		}
+		if ctx.Err() == nil {
+			t.Fatal("daemon Up context did not receive parent cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not receive startup context")
+	}
+}
 
 func TestDaemonRuntimeUsesOperationalDefaults(t *testing.T) {
 	r := newDaemonRuntime("/tmp/task8-state")
@@ -71,6 +111,18 @@ func TestParseCLI(t *testing.T) {
 	}
 	if _, err := parseArgs([]string{"wat"}); err == nil {
 		t.Error("expected unknown command rejection")
+	}
+}
+
+func TestParseCLIUsesEnvironmentStateDirAndAllowsUpOverride(t *testing.T) {
+	t.Setenv("COLABNOMAD_STATE_DIR", "/custom/state")
+	o, err := parseArgs([]string{"status"})
+	if err != nil || o.StateDir != "/custom/state" {
+		t.Fatalf("status state dir = %q, %v", o.StateDir, err)
+	}
+	o, err = parseArgs([]string{"up", "--repo", "x", "--state-dir", "/explicit"})
+	if err != nil || o.StateDir != "/explicit" {
+		t.Fatalf("up state dir = %q, %v", o.StateDir, err)
 	}
 }
 

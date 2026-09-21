@@ -72,6 +72,19 @@ func TestProviderCommandsAndURLDiscoveryAreRestricted(t *testing.T) {
 	if _, err := serveo.DiscoverURL("https://evil.example/"); err == nil {
 		t.Fatal("accepted arbitrary Serveo URL")
 	}
+	for _, raw := range []string{"https://demo.serveousercontent.com/path", "https://demo.foo.serveo.net/path"} {
+		if got, err := serveo.DiscoverURL(raw); err != nil || got != strings.TrimRight(raw, "/") {
+			t.Fatalf("Serveo URL %q = %q, %v", raw, got, err)
+		}
+	}
+	for _, raw := range []string{"https://serveo.net", "https://serveousercontent.com", "https://demo.serveo.net.evil", "https://user:pass@demo.serveo.net"} {
+		if _, err := serveo.DiscoverURL(raw); err == nil {
+			t.Fatalf("accepted untrusted Serveo URL %q", raw)
+		}
+	}
+	if got := serveo.ProbeHeaders(); got["serveo-skip-browser-warning"] != "true" {
+		t.Fatalf("Serveo probe headers = %#v", got)
+	}
 
 	cloudflare := NewCloudflare("/bin/cloudflared")
 	command = cloudflare.Command(7681, "/state")
@@ -97,5 +110,19 @@ func TestProbeSSEWaitsForFirstFrame(t *testing.T) {
 	err := ProbeSSE(context.Background(), server.Client(), server.URL, nil, 20*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "streaming timeout") {
 		t.Fatalf("ProbeSSE error = %v, want streaming timeout", err)
+	}
+}
+
+func TestProbeSSEWithHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Probe") != "yes" {
+			t.Errorf("missing probe header")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: ready\n\n"))
+	}))
+	defer server.Close()
+	if err := ProbeSSEWithHeaders(context.Background(), server.Client(), server.URL, nil, map[string]string{"X-Probe": "yes"}, time.Second); err != nil {
+		t.Fatal(err)
 	}
 }

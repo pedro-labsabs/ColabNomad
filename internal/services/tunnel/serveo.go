@@ -10,8 +10,6 @@ import (
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 )
 
-var serveoURLPattern = regexp.MustCompile(`https://[A-Za-z0-9-]+\.serveo\.net(?:[^\s]*)?`)
-
 type Serveo struct {
 	SSHPath        string
 	KnownHostsPath string
@@ -23,6 +21,9 @@ func NewServeo(sshPath, knownHostsPath string) *Serveo {
 
 func (s *Serveo) Name() string               { return "serveo" }
 func (s *Serveo) Capabilities() Capabilities { return Capabilities{SSE: true, WebSocket: true} }
+func (s *Serveo) ProbeHeaders() map[string]string {
+	return map[string]string{"serveo-skip-browser-warning": "true"}
+}
 
 func (s *Serveo) Command(localPort int, stateDir string) execx.ManagedSpec {
 	knownHosts := s.KnownHostsPath
@@ -41,7 +42,27 @@ func (s *Serveo) Command(localPort int, stateDir string) execx.ManagedSpec {
 }
 
 func (s *Serveo) DiscoverURL(output string) (string, error) {
-	return discoverProviderURL(output, serveoURLPattern, "serveo.net")
+	for _, token := range strings.Fields(output) {
+		if strings.HasPrefix(token, "https://") {
+			if got, err := validateServeoURL(token); err == nil {
+				return got, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no trusted Serveo tunnel URL found")
+}
+
+func validateServeoURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" {
+		return "", fmt.Errorf("invalid Serveo tunnel URL")
+	}
+	host := strings.ToLower(u.Hostname())
+	trusted := strings.HasSuffix(host, ".serveo.net") || strings.HasSuffix(host, ".serveousercontent.com")
+	if !trusted || host == "serveo.net" || host == "serveousercontent.com" {
+		return "", fmt.Errorf("invalid Serveo tunnel URL")
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 func discoverProviderURL(output string, pattern *regexp.Regexp, suffix string) (string, error) {

@@ -41,6 +41,18 @@ func (c Client) Do(req Request) (Response, error) {
 }
 
 func ensureDaemonSocket(stateDir string, _ int, start func() error) error {
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(stateDir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	path := stateDir + "/control.sock"
 	if c, err := net.DialTimeout("unix", path, 100*time.Millisecond); err == nil {
 		c.Close()
@@ -61,39 +73,35 @@ func removeSocket(path string) error {
 // EnsureDaemon reuses a reachable daemon and otherwise starts a detached
 // instance. It deliberately does not inspect or signal any saved PID.
 func EnsureDaemon(stateDir string) error {
-	socket := filepath.Join(stateDir, "control.sock")
-	if c, err := net.DialTimeout("unix", socket, 100*time.Millisecond); err == nil {
-		return c.Close()
-	}
-	if err := removeSocket(socket); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(stateDir, "logs"), 0700); err != nil {
-		return err
-	}
-	logFile, err := os.OpenFile(filepath.Join(stateDir, "logs", "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(os.Args[0], "daemon", "--state-dir", stateDir)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		return err
-	}
-	_ = logFile.Close()
-	if err := cmd.Process.Release(); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.DialTimeout("unix", socket, 100*time.Millisecond); err == nil {
-			return c.Close()
+	return ensureDaemonSocket(stateDir, 0, func() error {
+		if err := os.MkdirAll(filepath.Join(stateDir, "logs"), 0700); err != nil {
+			return err
 		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return fmt.Errorf("daemon control socket did not become ready")
+		logFile, err := os.OpenFile(filepath.Join(stateDir, "logs", "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command(os.Args[0], "daemon", "--state-dir", stateDir)
+		cmd.Stdout, cmd.Stderr = logFile, logFile
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			logFile.Close()
+			return err
+		}
+		_ = logFile.Close()
+		if err := cmd.Process.Release(); err != nil {
+			return err
+		}
+		socket := filepath.Join(stateDir, "control.sock")
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if c, err := net.DialTimeout("unix", socket, 100*time.Millisecond); err == nil {
+				return c.Close()
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return fmt.Errorf("daemon control socket did not become ready")
+	})
 }
 
 func (c Client) DoContext(ctx context.Context, req Request) (Response, error) {

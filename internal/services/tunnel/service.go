@@ -107,9 +107,17 @@ func (s *Service) Probe(ctx context.Context) error {
 		if path == "" {
 			path = "/api/event"
 		}
-		return ProbeSSE(ctx, s.Client, strings.TrimRight(publicURL, "/")+"/"+strings.TrimLeft(path, "/"), s.Auth, s.FirstFrame)
+		headers := map[string]string(nil)
+		if provider, ok := s.Provider.(interface{ ProbeHeaders() map[string]string }); ok {
+			headers = provider.ProbeHeaders()
+		}
+		return ProbeSSEWithHeaders(ctx, s.Client, strings.TrimRight(publicURL, "/")+"/"+strings.TrimLeft(path, "/"), s.Auth, headers, s.FirstFrame)
 	}
-	_, err = (health.Prober{Client: s.Client}).Do(ctx, health.Request{URL: publicURL, Auth: s.Auth, WantStatus: http.StatusOK})
+	headers := map[string]string(nil)
+	if provider, ok := s.Provider.(interface{ ProbeHeaders() map[string]string }); ok {
+		headers = provider.ProbeHeaders()
+	}
+	_, err = (health.Prober{Client: s.Client}).Do(ctx, health.Request{URL: publicURL, Auth: s.Auth, Headers: headers, WantStatus: http.StatusOK})
 	return err
 }
 

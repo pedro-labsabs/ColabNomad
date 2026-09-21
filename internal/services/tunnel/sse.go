@@ -12,6 +12,10 @@ import (
 )
 
 func ProbeSSE(ctx context.Context, client *http.Client, endpoint string, auth *health.BasicAuth, firstFrame time.Duration) error {
+	return ProbeSSEWithHeaders(ctx, client, endpoint, auth, nil, firstFrame)
+}
+
+func ProbeSSEWithHeaders(ctx context.Context, client *http.Client, endpoint string, auth *health.BasicAuth, headers map[string]string, firstFrame time.Duration) error {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -24,6 +28,9 @@ func ProbeSSE(ctx context.Context, client *http.Client, endpoint string, auth *h
 	request.Header.Set("Accept", "text/event-stream")
 	if auth != nil {
 		request.SetBasicAuth(auth.Username, auth.Password)
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
 	}
 	response, err := client.Do(request)
 	if err != nil {

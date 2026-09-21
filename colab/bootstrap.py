@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+NETWORK_TIMEOUT = 45
+
+
 class BootstrapError(RuntimeError):
     pass
 
@@ -62,7 +65,7 @@ def download_verified(url, integrity, dst):
     destination.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.new(algorithm)
     try:
-        with urllib.request.urlopen(url) as response, destination.open("wb") as output:
+        with urllib.request.urlopen(url, timeout=NETWORK_TIMEOUT) as response, destination.open("wb") as output:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -99,7 +102,7 @@ def try_release(config, repo_root):
     name = _release_name()
     base = "https://github.com/pedroteste00000008-stack/ColabNomad/releases/download/" + config.release
     try:
-        with urllib.request.urlopen(base + "/SHA256SUMS") as response:
+        with urllib.request.urlopen(base + "/SHA256SUMS", timeout=NETWORK_TIMEOUT) as response:
             checksums = response.read()
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -189,7 +192,7 @@ def collect_colab_secrets():
 
 
 def run_up(binary, config, secrets, repo_root=None):
-    argv = [str(binary), "up", "--repo", config.target_repo]
+    argv = [str(binary), "up", "--state-dir", str(config.state_dir), "--repo", config.target_repo]
     if config.target_ref:
         argv.extend(("--ref", config.target_ref))
     binary_dir = str(Path(binary).resolve().parent)
@@ -197,6 +200,7 @@ def run_up(binary, config, secrets, repo_root=None):
     env["PATH"] = binary_dir + os.pathsep + env.get("PATH", "")
     checkout = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[1]
     env["COLABNOMAD_VERSIONS_FILE"] = str(checkout / "config" / "versions.json")
+    env["COLABNOMAD_STATE_DIR"] = str(config.state_dir)
     env.update(secrets)
     return subprocess.run(argv, env=env, check=False).returncode
 

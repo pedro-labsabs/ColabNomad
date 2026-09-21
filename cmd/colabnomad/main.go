@@ -18,6 +18,18 @@ import (
 
 type cliOptions struct{ Command, Service, Repo, Ref, OpenCodeTunnel, TerminalTunnel, StateDir string }
 
+const startupTimeout = 10 * time.Minute
+
+func boundedStartupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, startupTimeout)
+}
+
+func runDaemonUp(parent context.Context, r *app.Runtime, request app.UpRequest) (app.ConnectionSummary, error) {
+	startupCtx, cancelStartup := boundedStartupContext(parent)
+	defer cancelStartup()
+	return r.Up(startupCtx, request)
+}
+
 func cliUsage() string {
 	return "usage: colabnomad <up|status|doctor|logs|restart|down>"
 }
@@ -51,7 +63,11 @@ func parseArgs(args []string) (cliOptions, error) {
 	if len(args) == 0 {
 		return cliOptions{}, fmt.Errorf("%s", cliUsage())
 	}
-	o := cliOptions{Command: args[0], OpenCodeTunnel: "serveo", TerminalTunnel: "serveo", StateDir: "/content/.colabnomad"}
+	stateDir := os.Getenv("COLABNOMAD_STATE_DIR")
+	if stateDir == "" {
+		stateDir = "/content/.colabnomad"
+	}
+	o := cliOptions{Command: args[0], OpenCodeTunnel: "serveo", TerminalTunnel: "serveo", StateDir: stateDir}
 	switch o.Command {
 	case "--help", "-h", "help":
 		if len(args) != 1 {
@@ -74,6 +90,7 @@ func parseArgs(args []string) (cliOptions, error) {
 		f.StringVar(&o.Ref, "ref", "", "repository ref")
 		f.StringVar(&o.OpenCodeTunnel, "opencode-tunnel", "serveo", "opencode tunnel")
 		f.StringVar(&o.TerminalTunnel, "terminal-tunnel", "serveo", "terminal tunnel")
+		f.StringVar(&o.StateDir, "state-dir", o.StateDir, "state directory")
 		if err := f.Parse(args[1:]); err != nil {
 			return o, err
 		}
@@ -157,7 +174,7 @@ func runDaemon(stateDir string) error {
 			if err := json.Unmarshal(req.Payload, &v); err != nil {
 				return control.Response{Error: err.Error()}
 			}
-			summary, err := r.Up(context.Background(), v)
+			summary, err := runDaemonUp(context.Background(), r, v)
 			if err != nil {
 				return control.Response{Error: err.Error()}
 			}

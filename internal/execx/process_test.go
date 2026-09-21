@@ -4,9 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestManagedChildSysProcAttrProtectsAgainstParentDeath(t *testing.T) {
+	attr := managedChildSysProcAttr()
+	if !attr.Setpgid || attr.Pdeathsig != syscall.SIGKILL {
+		t.Fatalf("child policy = %#v", attr)
+	}
+}
 
 func TestProcessStopsItsProcessGroup(t *testing.T) {
 	p, err := (OSProcessRunner{}).Start(ManagedSpec{Spec: Spec{Path: "sh", Args: []string{"-c", "trap '' TERM; sleep 10"}}})

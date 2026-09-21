@@ -101,7 +101,23 @@ func (s *Service) DestroySession(ctx context.Context) error {
 		}
 		tmux = path
 	}
-	if _, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"kill-session", "-t", sessionName}}); err != nil {
+	result, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"kill-session", "-t", sessionName}})
+	if err != nil && result.ExitCode != 1 {
+		return fmt.Errorf("destroy tmux session: %w", err)
+	}
+	return nil
+}
+
+// DestroyExistingSession cleans up a previously-created session without
+// installing tmux for a runtime that never reached Up.
+func DestroyExistingSession(ctx context.Context) error {
+	r := execx.OSRunner{}
+	tmux, err := r.LookPath("tmux")
+	if err != nil {
+		return nil
+	}
+	result, err := r.Run(ctx, execx.Spec{Path: tmux, Args: []string{"kill-session", "-t", sessionName}})
+	if err != nil && result.ExitCode != 1 {
 		return fmt.Errorf("destroy tmux session: %w", err)
 	}
 	return nil

@@ -8,6 +8,7 @@ import (
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/state"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/supervisor"
 )
 
@@ -110,6 +111,22 @@ func TestUpIsIdempotentAndRejectsIncompatibleRunningConfig(t *testing.T) {
 	}
 	if r.Config.RepoURL != "https://example/repo" || r.Config.RepoRef != "main" {
 		t.Fatalf("effective config not persisted: %#v", r.Config)
+	}
+}
+
+func TestReplacementRuntimeMarksPersistedServicesStaleAndNeverAdoptsPID(t *testing.T) {
+	dir := t.TempDir()
+	store := state.Store{Dir: dir}
+	if err := store.Save(state.RuntimeState{Services: map[string]state.ServiceState{"opencode": {PID: 12345, Status: string(supervisor.Healthy)}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: dir}, Store: store}
+	got := r.Status()
+	if got.Services["opencode"].Status != "stale" || got.Services["opencode"].PID != 0 {
+		t.Fatalf("replacement status adopted persisted process: %#v", got.Services["opencode"])
+	}
+	if err := r.Restart(context.Background(), "opencode"); err == nil || !strings.Contains(err.Error(), "run up or recover") {
+		t.Fatalf("restart guidance: %v", err)
 	}
 }
 

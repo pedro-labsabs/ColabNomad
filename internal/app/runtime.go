@@ -47,6 +47,10 @@ type Composition struct {
 }
 type ComposeFunc func(context.Context, UpRequest) (*Composition, error)
 
+func applyTunnelAuth(service *tunnel.Service, username, password string) {
+	service.Auth = &health.BasicAuth{Username: username, Password: password}
+}
+
 type loggedService struct {
 	supervisor.Service
 	dir string
@@ -313,6 +317,8 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 	to.Requirements = tunnel.Requirements{SSE: true}
 	to.FirstFrame = 10 * time.Second
 	tt := tunnel.NewService(terminalTunnel, term, c.StateDir, c.TerminalPort)
+	applyTunnelAuth(to, r.Credentials.OpenCodeUser, r.Credentials.OpenCodePassword)
+	applyTunnelAuth(tt, r.Credentials.TerminalUser, r.Credentials.TerminalPassword)
 	tt.Requirements = tunnel.Requirements{WebSocket: true}
 	tt.FirstFrame = 10 * time.Second
 	termLogged := loggedService{Service: term, dir: c.StateDir}
@@ -352,6 +358,13 @@ func (r *Runtime) Status() state.RuntimeState {
 		store.Dir = r.Config.StateDir
 	}
 	v, _ := store.Load()
+	if r.Manager == nil {
+		for name, item := range v.Services {
+			item.Status = "stale"
+			item.PID = 0
+			v.Services[name] = item
+		}
+	}
 	if r.Manager != nil {
 		for name, status := range r.Manager.Snapshot() {
 			item := v.Services[name]
@@ -473,12 +486,20 @@ func (r *Runtime) Logs(service string) string {
 }
 func (r *Runtime) Restart(ctx context.Context, service string) error {
 	if r.Manager == nil {
-		return fmt.Errorf("daemon is not running")
+		return fmt.Errorf("runtime is not reconstructed; run up or recover before restart")
 	}
 	return r.Manager.Restart(ctx, service)
 }
 func (r *Runtime) Down(ctx context.Context) error {
 	r.downOnce.Do(func() {
+		prior := false
+		store := r.Store
+		if store.Dir == "" {
+			store.Dir = r.Config.StateDir
+		}
+		if saved, err := store.Load(); err == nil && len(saved.Services) > 0 {
+			prior = true
+		}
 		if r.Stop != nil {
 			r.downErr = r.Stop(ctx)
 		} else if r.Manager != nil {
@@ -488,6 +509,18 @@ func (r *Runtime) Down(ctx context.Context) error {
 			if err := r.Terminal.DestroySession(ctx); r.downErr == nil {
 				r.downErr = err
 			}
+		} else if prior {
+			if err := terminal.DestroyExistingSession(ctx); r.downErr == nil {
+				r.downErr = err
+			}
+		}
+		if saved, err := store.Load(); err == nil && prior && r.downErr == nil {
+			for name, item := range saved.Services {
+				item.Status, item.PID = string(supervisor.Stopped), 0
+				saved.Services[name] = item
+			}
+			saved.Endpoints = map[string]string{}
+			r.downErr = store.Save(saved)
 		}
 	})
 	return r.downErr

@@ -14,6 +14,26 @@ from colab import bootstrap
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_network_requests_use_finite_timeout(self):
+        payload = b"payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        calls = []
+
+        def urlopen(url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("SHA256SUMS"):
+                return io.BytesIO((digest + "  colabnomad-linux-amd64\n").encode())
+            return io.BytesIO(payload)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(bootstrap.urllib.request, "urlopen", side_effect=urlopen):
+            dst = Path(tmp) / "download"
+            bootstrap.download_verified("https://example.test/file", "sha256:" + digest, dst)
+            config = bootstrap.BootstrapConfig("owner/repo", release="v0.1.0", state_dir=Path(tmp) / "state")
+            bootstrap.try_release(config, Path(tmp))
+        self.assertTrue(calls)
+        self.assertTrue(all(call[1].get("timeout") == bootstrap.NETWORK_TIMEOUT for call in calls))
+        self.assertGreater(bootstrap.NETWORK_TIMEOUT, 0)
+
     def test_checksum_mismatch_never_executes_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -39,7 +59,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotIn("ghp:a@b!punctuation", argv)
         self.assertNotIn("ghp:a@b!punctuation", repr(argv))
         self.assertEqual(run.call_args.kwargs["env"]["GITHUB_TOKEN"], "ghp:a@b!punctuation")
-        self.assertEqual(argv, ["/state/colabnomad", "up", "--repo", "owner/repo", "--ref", "main"])
+        self.assertEqual(argv, ["/state/colabnomad", "up", "--state-dir", "/content/.colabnomad", "--repo", "owner/repo", "--ref", "main"])
 
     def test_platform_key_maps_supported_machines(self):
         with mock.patch.object(bootstrap.platform, "machine", return_value="x86_64"):
@@ -178,6 +198,14 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(env["COLABNOMAD_VERSIONS_FILE"], "/checkout/config/versions.json")
         self.assertEqual(env["PATH"].split(os.pathsep)[0], "/state/bin")
         self.assertNotIn("x", repr(run.call_args.args[0]))
+
+    def test_run_up_passes_state_dir_to_cli_and_environment(self):
+        config = bootstrap.BootstrapConfig("owner/repo", state_dir=Path("/custom/state"))
+        with mock.patch.object(bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            bootstrap.run_up(Path("/state/bin/colabnomad"), config, {})
+        self.assertIn("--state-dir", run.call_args.args[0])
+        self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--state-dir") + 1], "/custom/state")
+        self.assertEqual(run.call_args.kwargs["env"]["COLABNOMAD_STATE_DIR"], "/custom/state")
 
 
 if __name__ == "__main__":

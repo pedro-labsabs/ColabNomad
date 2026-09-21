@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
+	"github.com/pedroteste00000008-stack/ColabNomad/internal/services/tunnel"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/state"
 )
 
@@ -43,6 +44,16 @@ func TestUpComposesExactServicesAndPersistsNonSecretState(t *testing.T) {
 	r.LogContents = map[string]string{"terminal": "gh:secret key\nsecret"}
 	if got := r.Logs("terminal"); strings.Contains(got, "gh:secret") || strings.Contains(got, "key\nsecret") {
 		t.Fatalf("secret leaked from logs: %q", got)
+	}
+}
+
+func TestPublicTunnelAuthUsesRuntimeCredentials(t *testing.T) {
+	open := tunnel.NewService(nil, nil, t.TempDir(), 4096)
+	term := tunnel.NewService(nil, nil, t.TempDir(), 7681)
+	applyTunnelAuth(open, "open", "open-pass")
+	applyTunnelAuth(term, "term", "term-pass")
+	if open.Auth.Username != "open" || open.Auth.Password != "open-pass" || term.Auth.Username != "term" || term.Auth.Password != "term-pass" {
+		t.Fatalf("tunnel auth: open=%#v terminal=%#v", open.Auth, term.Auth)
 	}
 }
 

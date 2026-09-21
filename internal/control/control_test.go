@@ -101,3 +101,34 @@ func TestServerServeStopsWhenContextCancelled(t *testing.T) {
 		t.Fatal("serve did not stop")
 	}
 }
+
+func TestEnsureDaemonSocketSerializesConcurrentStarts(t *testing.T) {
+	dir := t.TempDir()
+	var starts int
+	var listener net.Listener
+	start := func() error {
+		starts++
+		var err error
+		listener, err = net.Listen("unix", filepath.Join(dir, "control.sock"))
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	defer func() {
+		if listener != nil {
+			listener.Close()
+		}
+	}()
+	done := make(chan error, 2)
+	go func() { done <- ensureDaemonSocket(dir, 0, start) }()
+	go func() { done <- ensureDaemonSocket(dir, 0, start) }()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("start invoked %d times", starts)
+	}
+}
