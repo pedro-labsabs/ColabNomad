@@ -2,8 +2,11 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +16,28 @@ import (
 )
 
 type namedLocalService struct{ name string }
+
+type generationProvider struct {
+	stdoutPath string
+	stderrPath string
+}
+
+func (p generationProvider) Name() string               { return "generation-test" }
+func (p generationProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p generationProvider) Command(int, string) execx.ManagedSpec {
+	return execx.ManagedSpec{
+		StdoutPath: p.stdoutPath,
+		StderrPath: p.stderrPath,
+	}
+}
+func (p generationProvider) DiscoverURL(output string) (string, error) {
+	for _, token := range strings.Fields(output) {
+		if strings.HasPrefix(token, "http://") {
+			return token, nil
+		}
+	}
+	return "", fmt.Errorf("no generation test URL found")
+}
 
 func (s namedLocalService) Name() string                  { return s.name }
 func (s namedLocalService) Dependencies() []string        { return nil }
@@ -49,6 +74,95 @@ func TestTunnelPrepareRequiresDependency(t *testing.T) {
 	s := NewService(NewServeo("ssh", ""), nil, t.TempDir(), 7681)
 	if err := s.Prepare(context.Background()); err == nil {
 		t.Fatal("tunnel without a local dependency was accepted")
+	}
+}
+
+func TestTunnelPrepareStartsFirstProviderGeneration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	stateDir := t.TempDir()
+	provider := generationProvider{
+		stdoutPath: filepath.Join(stateDir, "provider.stdout.log"),
+		stderrPath: filepath.Join(stateDir, "provider.stderr.log"),
+	}
+	s := NewService(provider, namedLocalService{name: "local"}, stateDir, 7681)
+
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider.stdoutPath, []byte(server.URL+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PublicURL(); got != server.URL {
+		t.Fatalf("PublicURL = %q, want %q", got, server.URL)
+	}
+}
+
+func TestTunnelPrepareStartsFreshProviderGeneration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	stateDir := t.TempDir()
+	provider := generationProvider{
+		stdoutPath: filepath.Join(stateDir, "provider.stdout.log"),
+		stderrPath: filepath.Join(stateDir, "provider.stderr.log"),
+	}
+	s := NewService(provider, namedLocalService{name: "local"}, stateDir, 7681)
+
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider.stdoutPath, []byte(server.URL+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PublicURL(); got != "" {
+		t.Fatalf("PublicURL after new generation = %q, want empty", got)
+	}
+	for _, path := range []string{provider.stdoutPath, provider.stderrPath} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(contents) != 0 {
+			t.Fatalf("%s contains stale generation output %q", path, contents)
+		}
+	}
+
+	secondURL := server.URL + "/second"
+	if err := os.WriteFile(provider.stdoutPath, []byte(secondURL+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PublicURL(); got != secondURL {
+		t.Fatalf("PublicURL = %q, want %q", got, secondURL)
+	}
+}
+
+func TestTunnelPrepareFailsWhenProviderOutputCannotBeReset(t *testing.T) {
+	stateDir := t.TempDir()
+	blockedPath := filepath.Join(stateDir, "provider.stdout.log")
+	if err := os.Mkdir(blockedPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	provider := generationProvider{
+		stdoutPath: blockedPath,
+		stderrPath: filepath.Join(stateDir, "provider.stderr.log"),
+	}
+	s := NewService(provider, namedLocalService{name: "local"}, stateDir, 7681)
+
+	if err := s.Prepare(context.Background()); err == nil {
+		t.Fatal("Prepare succeeded despite an unusable provider output path")
 	}
 }
 

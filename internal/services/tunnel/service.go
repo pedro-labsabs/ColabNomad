@@ -68,7 +68,26 @@ func (s *Service) Prepare(context.Context) error {
 	if s.StateDir == "" {
 		return fmt.Errorf("tunnel state directory is required")
 	}
-	return os.MkdirAll(s.StateDir, 0700)
+	if err := os.MkdirAll(s.StateDir, 0700); err != nil {
+		return err
+	}
+	command := s.Command()
+	s.mu.Lock()
+	s.publicURL = ""
+	s.mu.Unlock()
+	for _, path := range []string{command.StdoutPath, command.StderrPath} {
+		if path == "" {
+			continue
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			return fmt.Errorf("reset tunnel output %q: %w", path, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close tunnel output %q: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Command() execx.ManagedSpec {
