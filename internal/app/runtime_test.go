@@ -2,15 +2,48 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/config"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/execx"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/state"
 	"github.com/pedroteste00000008-stack/ColabNomad/internal/supervisor"
 )
+
+type runtimeFakeHandle struct{ done chan error }
+
+func (h *runtimeFakeHandle) PID() int           { return 123 }
+func (h *runtimeFakeHandle) Done() <-chan error { return h.done }
+func (h *runtimeFakeHandle) Stop(time.Duration) error {
+	select {
+	case <-h.done:
+	default:
+		close(h.done)
+	}
+	return nil
+}
+
+type runtimeFakeRunner struct{ handle *runtimeFakeHandle }
+
+func (r *runtimeFakeRunner) Start(execx.ManagedSpec) (execx.ProcessHandle, error) {
+	r.handle = &runtimeFakeHandle{done: make(chan error)}
+	return r.handle, nil
+}
+
+type runtimeFakeService struct{ stopped *bool }
+
+func (s runtimeFakeService) Name() string                  { return "svc" }
+func (s runtimeFakeService) Dependencies() []string        { return nil }
+func (s runtimeFakeService) Prepare(context.Context) error { return nil }
+func (s runtimeFakeService) Command() execx.ManagedSpec    { return execx.ManagedSpec{} }
+func (s runtimeFakeService) Probe(context.Context) error   { return nil }
+func (s runtimeFakeService) Cleanup(context.Context) error { *s.stopped = true; return nil }
 
 type doctorService struct {
 	name string
@@ -111,6 +144,56 @@ func TestUpIsIdempotentAndRejectsIncompatibleRunningConfig(t *testing.T) {
 	}
 	if r.Config.RepoURL != "https://example/repo" || r.Config.RepoRef != "main" {
 		t.Fatalf("effective config not persisted: %#v", r.Config)
+	}
+}
+
+func TestUpUsesManifestPathFromRequestAndRetainsIt(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "requested-versions.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"opencode":{"version":"requested"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var r *Runtime
+	r = &Runtime{Config: config.RuntimeConfig{StateDir: dir, OpenCodePort: 4096, TerminalPort: 7681}, Compose: func(context.Context, UpRequest) (*Composition, error) {
+		if got := r.Versions.OpenCode.Version; got != "requested" {
+			return nil, errors.New("request manifest was not loaded")
+		}
+		return &Composition{Endpoints: map[string]string{}}, nil
+	}}
+	if _, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo", VersionsPath: manifestPath}); err != nil {
+		t.Fatal(err)
+	}
+	if r.VersionsPath != manifestPath {
+		t.Fatalf("versions path = %q, want %q", r.VersionsPath, manifestPath)
+	}
+}
+
+func TestUpRollsBackStartedServicesWhenStateSaveFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "state.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cleaned := false
+	runner := &runtimeFakeRunner{}
+	svc := runtimeFakeService{stopped: &cleaned}
+	m := supervisor.NewManager([]supervisor.Service{svc}, runner, supervisor.RestartPolicy{MaxRestarts: 0})
+	r := &Runtime{Config: config.RuntimeConfig{StateDir: dir, OpenCodePort: 4096, TerminalPort: 7681}, Compose: func(context.Context, UpRequest) (*Composition, error) {
+		return &Composition{Services: []string{"svc"}, Endpoints: map[string]string{}, Manager: m}, nil
+	}}
+	_, err := r.Up(context.Background(), UpRequest{RepoURL: "https://example/repo"})
+	if err == nil || !strings.Contains(err.Error(), "replace state.json") {
+		t.Fatalf("Up error = %v", err)
+	}
+	if !cleaned || runner.handle == nil {
+		t.Fatal("started service was not cleaned up after persistence failure")
+	}
+	select {
+	case <-runner.handle.Done():
+	default:
+		t.Fatal("started process was not stopped after persistence failure")
+	}
+	if r.running || r.Manager != nil {
+		t.Fatalf("runtime retained running state: running=%v manager=%v", r.running, r.Manager)
 	}
 }
 

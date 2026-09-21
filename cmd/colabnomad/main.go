@@ -47,7 +47,7 @@ func controlTimeout(command string) time.Duration {
 
 func requestPayload(o cliOptions) []byte {
 	if o.Command == "up" {
-		b, _ := json.Marshal(app.UpRequest{RepoURL: o.Repo, RepoRef: o.Ref, GitHubToken: os.Getenv("GITHUB_TOKEN"), OpenCodeAPIKey: os.Getenv("OPENCODE_API_KEY"), OpenCodeTunnel: config.TunnelProviderName(o.OpenCodeTunnel), TerminalTunnel: config.TunnelProviderName(o.TerminalTunnel)})
+		b, _ := json.Marshal(app.UpRequest{RepoURL: o.Repo, RepoRef: o.Ref, GitHubToken: os.Getenv("GITHUB_TOKEN"), OpenCodeAPIKey: os.Getenv("OPENCODE_API_KEY"), VersionsPath: os.Getenv("COLABNOMAD_VERSIONS_FILE"), OpenCodeTunnel: config.TunnelProviderName(o.OpenCodeTunnel), TerminalTunnel: config.TunnelProviderName(o.TerminalTunnel)})
 		return b
 	}
 	b, _ := json.Marshal(o)
@@ -167,6 +167,7 @@ func runDaemon(stateDir string) error {
 	r := newDaemonRuntime(stateDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	r.SupervisorContext = ctx
 	s, err := control.NewServer(stateDir, serializedHandler(func(req control.Request) control.Response {
 		switch req.Command {
 		case "up":

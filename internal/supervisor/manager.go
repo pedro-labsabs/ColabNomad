@@ -21,6 +21,7 @@ type Manager struct {
 	readinessTimeout time.Duration
 	probeInterval    time.Duration
 	clock            Clock
+	lifetime         context.Context
 }
 
 // Timer and Clock isolate scheduling from wall-clock time. Production uses
@@ -101,13 +102,23 @@ func (m *Manager) ServicePID(name string) int {
 }
 
 func (m *Manager) StartAll(ctx context.Context) error {
+	return m.StartAllWithLifetime(ctx, ctx)
+}
+
+// StartAllWithLifetime uses startupCtx for preparation/readiness and lifetimeCtx
+// for monitoring processes after startup has completed.
+func (m *Manager) StartAllWithLifetime(startupCtx, lifetimeCtx context.Context) error {
+	if lifetimeCtx == nil {
+		lifetimeCtx = startupCtx
+	}
+	m.lifetime = lifetimeCtx
 	order, err := m.topologicalOrder()
 	if err != nil {
 		return err
 	}
 	m.order = order
 	for _, name := range order {
-		if err := m.startReady(ctx, name); err != nil {
+		if err := m.startReady(startupCtx, name); err != nil {
 			_ = m.StopAll(context.Background())
 			return err
 		}
@@ -150,7 +161,11 @@ func (m *Manager) startReadyMode(ctx context.Context, name string, monitor bool)
 	}
 	m.setState(name, Healthy)
 	if monitor {
-		go m.monitor(ctx, name, service, h)
+		monitorCtx := m.lifetime
+		if monitorCtx == nil {
+			monitorCtx = ctx
+		}
+		go m.monitor(monitorCtx, name, service, h)
 	}
 	return nil
 }

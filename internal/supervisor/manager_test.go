@@ -239,6 +239,26 @@ func TestManagerCancelsRestartBackoff(t *testing.T) {
 	}
 }
 
+func TestManagerRestartMonitoringSurvivesCancelledStartupContext(t *testing.T) {
+	startup, cancelStartup := context.WithCancel(context.Background())
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
+	defer cancelLifetime()
+	runner := &fakeRunner{}
+	clock := &fakeClock{}
+	m := NewManager([]Service{&testService{name: "svc", log: &[]string{}, mu: &sync.Mutex{}}}, runner, RestartPolicy{MaxRestarts: 1}, WithClock(clock))
+	if err := m.StartAllWithLifetime(startup, lifetime); err != nil {
+		t.Fatal(err)
+	}
+	cancelStartup()
+	runner.closeLatest()
+	waitFor(t, func() bool { return clock.pending() > 0 })
+	clock.Advance(500 * time.Millisecond)
+	waitFor(t, func() bool { return runner.count() == 2 && m.State("svc") == Healthy })
+	if m.State("svc") != Healthy {
+		t.Fatalf("service state = %s, want healthy", m.State("svc"))
+	}
+}
+
 func TestManagerReadinessTimeout(t *testing.T) {
 	clock := &fakeClock{}
 	svc := &testService{name: "svc", probeErr: fmt.Errorf("not ready"), log: &[]string{}, mu: &sync.Mutex{}}

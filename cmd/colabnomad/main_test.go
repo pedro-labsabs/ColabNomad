@@ -174,3 +174,18 @@ func TestUpPayloadUsesSanitizedEnvironmentSecretsWithoutArgv(t *testing.T) {
 		t.Fatalf("bad request boundary: %#v", got)
 	}
 }
+
+func TestUpPayloadCarriesPinnedManifestPath(t *testing.T) {
+	t.Setenv("COLABNOMAD_VERSIONS_FILE", "/tmp/pinned-versions.json")
+	o, err := parseArgs([]string{"up", "--repo", "https://example/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got app.UpRequest
+	if err := json.Unmarshal(requestPayload(o), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.VersionsPath != "/tmp/pinned-versions.json" {
+		t.Fatalf("versions path = %q", got.VersionsPath)
+	}
+}

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -28,8 +29,8 @@ import (
 )
 
 type UpRequest struct {
-	RepoURL, RepoRef, GitHubToken, OpenCodeAPIKey string
-	OpenCodeTunnel, TerminalTunnel                config.TunnelProviderName
+	RepoURL, RepoRef, GitHubToken, OpenCodeAPIKey, VersionsPath string
+	OpenCodeTunnel, TerminalTunnel                              config.TunnelProviderName
 }
 type ConnectionSummary struct{ OpenCodeURL, TerminalURL, OpenCodeUser, OpenCodePassword, TerminalUser, TerminalPassword string }
 type ProbeResult struct{ Err error }
@@ -68,27 +69,28 @@ func (s loggedService) Command() execx.ManagedSpec {
 }
 
 type Runtime struct {
-	Config           config.RuntimeConfig
-	Store            state.Store
-	Manager          *supervisor.Manager
-	Probes           map[string]ProbeResult
-	Credentials      state.Credentials
-	LogContents      map[string]string
-	Stop             func(context.Context) error
-	VersionsPath     string
-	Versions         config.Versions
-	Compose          ComposeFunc
-	Services         map[string]supervisor.Service
-	Terminal         *terminal.Service
-	EndpointServices map[string]string
-	WorkspacePath    string
-	ToolChecks       map[string]error
-	ProviderChecks   map[string]error
-	ToolPaths        map[string]string
-	RedactionSecrets []string
-	running          bool
-	downOnce         sync.Once
-	downErr          error
+	Config            config.RuntimeConfig
+	Store             state.Store
+	Manager           *supervisor.Manager
+	Probes            map[string]ProbeResult
+	Credentials       state.Credentials
+	LogContents       map[string]string
+	Stop              func(context.Context) error
+	VersionsPath      string
+	Versions          config.Versions
+	Compose           ComposeFunc
+	Services          map[string]supervisor.Service
+	Terminal          *terminal.Service
+	EndpointServices  map[string]string
+	WorkspacePath     string
+	ToolChecks        map[string]error
+	ProviderChecks    map[string]error
+	ToolPaths         map[string]string
+	RedactionSecrets  []string
+	SupervisorContext context.Context
+	running           bool
+	downOnce          sync.Once
+	downErr           error
 }
 
 func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, error) {
@@ -148,22 +150,22 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if err := os.MkdirAll(filepath.Join(c.StateDir, "logs"), 0700); err != nil {
 		return out, err
 	}
-	manifestPath := r.VersionsPath
+	manifestPath := req.VersionsPath
+	if manifestPath == "" {
+		manifestPath = r.VersionsPath
+	}
 	if manifestPath == "" {
 		manifestPath = os.Getenv("COLABNOMAD_VERSIONS_FILE")
 	}
-	if r.Versions.OpenCode.Version == "" {
-		if manifestPath == "" {
-			if r.Compose == nil {
-				return out, fmt.Errorf("COLABNOMAD_VERSIONS_FILE is required; pinned versions manifest path is not configured")
-			}
-		} else {
-			versions, err := config.LoadVersions(manifestPath)
-			if err != nil {
-				return out, fmt.Errorf("load pinned versions manifest %q: %w", manifestPath, err)
-			}
-			r.Versions = versions
+	if manifestPath != "" {
+		versions, err := config.LoadVersions(manifestPath)
+		if err != nil {
+			return out, fmt.Errorf("load pinned versions manifest %q: %w", manifestPath, err)
 		}
+		r.Versions = versions
+		r.VersionsPath = manifestPath
+	} else if r.Versions.OpenCode.Version == "" && r.Compose == nil {
+		return out, fmt.Errorf("COLABNOMAD_VERSIONS_FILE is required; pinned versions manifest path is not configured")
 	}
 	cred := r.Credentials
 	if cred.OpenCodeUser == "" {
@@ -202,15 +204,15 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if err != nil {
 		return out, err
 	}
-	if comp.Manager != nil {
-		if err := comp.Manager.StartAll(ctx); err != nil {
+	manager := comp.Manager
+	if manager != nil {
+		lifetime := r.SupervisorContext
+		if lifetime == nil {
+			lifetime = ctx
+		}
+		if err := manager.StartAllWithLifetime(ctx, lifetime); err != nil {
 			return out, err
 		}
-		r.Manager = comp.Manager
-	}
-	r.WorkspacePath = comp.WorkspacePath
-	if comp.ServiceMap != nil {
-		r.Services = comp.ServiceMap
 	}
 	if comp.TerminalTunnel != nil {
 		comp.Endpoints["terminal"] = comp.TerminalTunnel.PublicURL()
@@ -218,20 +220,30 @@ func (r *Runtime) Up(ctx context.Context, req UpRequest) (ConnectionSummary, err
 	if comp.OpenCodeTunnel != nil {
 		comp.Endpoints["opencode"] = comp.OpenCodeTunnel.PublicURL()
 	}
-	r.EndpointServices = comp.Endpoints
 	services := make(map[string]state.ServiceState)
 	for _, name := range comp.Services {
 		status := string(supervisor.Healthy)
 		pid := 0
-		if r.Manager != nil {
-			status = string(r.Manager.State(name))
-			pid = r.Manager.ServicePID(name)
+		if manager != nil {
+			status = string(manager.State(name))
+			pid = manager.ServicePID(name)
 		}
 		services[name] = state.ServiceState{Status: status, Port: servicePort(name, c), PID: pid}
 	}
 	if err := r.Store.Save(state.RuntimeState{SchemaVersion: 1, DaemonPID: os.Getpid(), WorkspacePath: comp.WorkspacePath, Services: services, Endpoints: comp.Endpoints, UpdatedAt: time.Now().UTC()}); err != nil {
+		if manager != nil {
+			if cleanupErr := manager.StopAll(context.Background()); cleanupErr != nil {
+				return out, errors.Join(err, fmt.Errorf("cleanup started services: %w", cleanupErr))
+			}
+		}
 		return out, err
 	}
+	r.Manager = manager
+	r.WorkspacePath = comp.WorkspacePath
+	if comp.ServiceMap != nil {
+		r.Services = comp.ServiceMap
+	}
+	r.EndpointServices = comp.Endpoints
 	r.Config = c
 	r.running = true
 	return r.connectionSummary()
