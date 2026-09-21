@@ -14,6 +14,8 @@ type Server struct {
 	listener net.Listener
 	handler  Handler
 	path     string
+	owner    string
+	identity ownerIdentity
 }
 
 func NewServer(stateDir string, handler Handler) (*Server, error) {
@@ -37,7 +39,19 @@ func NewServer(stateDir string, handler Handler) (*Server, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return &Server{listener: l, handler: handler, path: path}, nil
+	identity, err := currentOwnerIdentity()
+	if err != nil {
+		l.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	owner := ownerPath(stateDir)
+	if err := writeOwner(owner, identity); err != nil {
+		l.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	return &Server{listener: l, handler: handler, path: path, owner: owner, identity: identity}, nil
 }
 func (s *Server) Serve(ctx context.Context) error {
 	go func() { <-ctx.Done(); s.listener.Close() }()
@@ -57,6 +71,11 @@ func (s *Server) Close() error {
 	removeErr := os.Remove(s.path)
 	if os.IsNotExist(removeErr) {
 		removeErr = nil
+	}
+	if sameOwner(s.owner, s.identity) {
+		if ownerErr := os.Remove(s.owner); ownerErr != nil && !os.IsNotExist(ownerErr) && removeErr == nil {
+			removeErr = ownerErr
+		}
 	}
 	if err != nil {
 		return err
