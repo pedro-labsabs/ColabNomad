@@ -260,6 +260,28 @@ func servicePort(name string, c config.RuntimeConfig) int {
 	return c.TerminalPort
 }
 
+func resolveWorkspacePath(root, repoURL string) (string, error) {
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid repository URL")
+	}
+	name := filepath.Base(strings.TrimSuffix(u.Path, "/"))
+	if name == "." || name == "" {
+		name = "repo"
+	}
+	if name == ".." {
+		return "", fmt.Errorf("workspace path escapes root: invalid repository path")
+	}
+
+	root = filepath.Clean(root)
+	path := filepath.Join(root, name)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace path escapes root: invalid repository path")
+	}
+	return path, nil
+}
+
 func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpRequest) (*Composition, error) {
 	if c.RepoURL == "" {
 		return nil, fmt.Errorf("repository URL is required")
@@ -268,16 +290,12 @@ func (r *Runtime) compose(ctx context.Context, c config.RuntimeConfig, req UpReq
 	if root == "" {
 		root = filepath.Join(c.StateDir, "workspaces")
 	}
-	u, err := url.Parse(c.RepoURL)
+	workspacePath, err := resolveWorkspacePath(root, c.RepoURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse repository URL: %w", err)
-	}
-	name := filepath.Base(strings.TrimSuffix(u.Path, "/"))
-	if name == "." || name == "" {
-		name = "repo"
+		return nil, err
 	}
 	wm := workspace.Manager{}
-	wr, err := wm.Prepare(ctx, workspace.Request{RepoURL: c.RepoURL, Ref: c.RepoRef, Root: filepath.Join(root, name), GitHubToken: req.GitHubToken})
+	wr, err := wm.Prepare(ctx, workspace.Request{RepoURL: c.RepoURL, Ref: c.RepoRef, Root: workspacePath, GitHubToken: req.GitHubToken})
 	if err != nil {
 		return nil, err
 	}
