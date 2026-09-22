@@ -4,6 +4,10 @@ ColabNomad runs OpenCode and a browser terminal for a target Git repository in
 a CPU-only Google Colab runtime. The notebook is a small bootstrap adapter;
 the Go binary owns the long-lived services and their in-session state.
 
+## Open in Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pedro-labsabs/ColabNomad/blob/main/notebook/colabnomad.ipynb)
+
 ## Happy path
 
 1. Open [`notebook/colabnomad.ipynb`](notebook/colabnomad.ipynb) in Google
